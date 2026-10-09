@@ -1,0 +1,104 @@
+version: "3.9"
+
+services:
+  # ──────────── 基础设施 ────────────
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-123456}
+      MYSQL_DATABASE: tracemind
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./backend/src/main/resources/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass ${REDIS_PASSWORD:-123456}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  elasticsearch:
+    image: elasticsearch:8.15.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ──────────── Python AI 推理服务 ────────────
+  python-ai:
+    build: ./python-ai
+    env_file:
+      - ./python-ai/.env
+    environment:
+      - ES_HOSTS=http://elasticsearch:9200
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-123456}@redis:6379/0
+      - MYSQL_DSN=mysql+asyncmy://root:${DB_PASSWORD:-123456}@mysql:3306/tracemind?charset=utf8mb4
+      - SERVER_HOST=0.0.0.0
+    ports:
+      - "8100:8100"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+
+  # ──────────── Java 后端 ────────────
+  backend:
+    build: ./backend
+    environment:
+      - DB_PASSWORD=${DB_PASSWORD:-123456}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-123456}
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/tracemind?useSSL=false&allowPublicKeyRetrieval=true
+      - SPRING_DATA_REDIS_HOST=redis
+      - SPRING_ELASTICSEARCH_URIS=http://elasticsearch:9200
+      - TRACEMIND_PYTHON_BASE_URL=http://python-ai:8100
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      python-ai:
+        condition: service_healthy
+
+  # ──────────── 前端 ────────────
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:
+  redis_data:
+  es_data:

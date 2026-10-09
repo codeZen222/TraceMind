@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.tracemind.mapper.ErrorBaselineMapper">
+
+    <sql id="baseColumns">
+        id, project_id, cluster_id, first_seen_at, last_seen_at, acknowledged
+    </sql>
+
+    <select id="countByProject" resultType="long">
+        SELECT COUNT(*)
+        FROM error_baseline
+        WHERE project_id = #{projectId}
+    </select>
+
+    <select id="exists" resultType="int">
+        SELECT COUNT(*)
+        FROM error_baseline
+        WHERE project_id = #{projectId} AND cluster_id = #{clusterId}
+    </select>
+
+    <!--
+      INSERT IGNORE：并发判新时唯一键冲突静默跳过，不打断主流程。
+      first_seen_at / last_seen_at 交给 DB 的 DEFAULT CURRENT_TIMESTAMP。
+    -->
+    <insert id="insert">
+        INSERT IGNORE INTO error_baseline (project_id, cluster_id)
+        VALUES (#{projectId}, #{clusterId})
+    </insert>
+
+    <!-- 冷启动建基线：acknowledged 显式置 1（历史已知，不算新告警） -->
+    <insert id="insertBaseline">
+        INSERT IGNORE INTO error_baseline (project_id, cluster_id, acknowledged)
+        VALUES (#{projectId}, #{clusterId}, 1)
+    </insert>
+
+    <select id="selectUnacked" resultType="org.example.tracemind.pojo.entity.ErrorBaseline">
+        SELECT <include refid="baseColumns"/>
+        FROM error_baseline
+        WHERE project_id = #{projectId} AND acknowledged = 0
+        ORDER BY first_seen_at DESC
+    </select>
+
+    <update id="ack">
+        UPDATE error_baseline
+        SET acknowledged = 1
+        WHERE project_id = #{projectId} AND cluster_id = #{clusterId}
+    </update>
+</mapper>

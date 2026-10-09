@@ -1,0 +1,40 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+dist-ssr/
+.vite/
+
+# 环境配置（密钥也在里面）
+.env
+.env.*
+!.env.example
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 调试
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# 类型缓存
+*.tsbuildinfo
+
+# 测试
+coverage/
+.nyc_output/
+
+# 临时文件
+*.tmp
+*.bak
+*~

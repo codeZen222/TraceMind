@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.tracemind.mapper.AgentSessionMapper">
+
+    <sql id="baseColumns">
+        session_id, project_id, status, trigger_log_id, started_at, finished_at,
+        total_cost_ms, llm_used, matched_analyzer, root_cause, suggestion,
+        confidence, tool_call_count, result_json
+    </sql>
+
+    <select id="selectById" resultType="org.example.tracemind.pojo.entity.AgentSession">
+        SELECT <include refid="baseColumns"/>
+        FROM agent_session
+        WHERE session_id = #{sessionId}
+    </select>
+
+    <!-- started_at 不写：交给 DB 的 DEFAULT CURRENT_TIMESTAMP（会话时区已是 UTC） -->
+    <insert id="insert">
+        INSERT INTO agent_session
+        (session_id, project_id, status, trigger_log_id, llm_used, tool_call_count)
+        VALUES
+            (#{sessionId}, #{projectId}, #{status}, #{triggerLogId}, #{llmUsed}, #{toolCallCount})
+    </insert>
+
+    <!--
+      落最终结果。三个注意点：
+      1) result_json 是 MySQL 的 JSON 列 —— 传进去的字符串必须是合法 JSON，
+         否则报 "Invalid JSON text"，而错误信息里看不到是哪个字段
+      2) confidence 是 DECIMAL(3,2)，Java 侧 Double 传 0~1 之间
+      3) finished_at 用 DB 的 NOW()：会话时区已被 forceConnectionTimeZoneToSession 掰到 UTC，
+         和 created_at 的口径一致；传 Java 时间也行，但两条路别混用
+    -->
+    <update id="updateResult">
+        UPDATE agent_session
+        <set>
+            status           = #{status},
+            finished_at      = NOW(),
+            <if test="totalCostMs != null">total_cost_ms = #{totalCostMs},</if>
+            <if test="llmUsed != null">llm_used = #{llmUsed},</if>
+            <if test="matchedAnalyzer != null">matched_analyzer = #{matchedAnalyzer},</if>
+            <if test="rootCause != null">root_cause = #{rootCause},</if>
+            <if test="suggestion != null">suggestion = #{suggestion},</if>
+            <if test="confidence != null">confidence = #{confidence},</if>
+            <if test="toolCallCount != null">tool_call_count = #{toolCallCount},</if>
+            <if test="resultJson != null">result_json = #{resultJson},</if>
+        </set>
+        WHERE session_id = #{sessionId}
+    </update>
+
+    <update id="updateStatus">
+        UPDATE agent_session
+        SET status = #{status}, finished_at = NOW()
+        WHERE session_id = #{sessionId}
+    </update>
+
+    <update id="incrToolCall">
+        UPDATE agent_session
+        SET tool_call_count = tool_call_count + 1
+        WHERE session_id = #{sessionId}
+    </update>
+
+    <select id="selectPageByProject" resultType="org.example.tracemind.pojo.entity.AgentSession">
+        SELECT <include refid="baseColumns"/>
+        FROM agent_session
+        WHERE project_id = #{projectId}
+        ORDER BY started_at DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countByProject" resultType="long">
+        SELECT COUNT(*) FROM agent_session WHERE project_id = #{projectId}
+    </select>
+
+    <!-- 跨项目：owner 的全部会话，子查询 join project 过滤 owner -->
+    <select id="selectPageByOwner" resultType="org.example.tracemind.pojo.entity.AgentSession">
+        SELECT <include refid="baseColumns"/>
+        FROM agent_session
+        WHERE project_id IN (SELECT id FROM project WHERE owner_id = #{ownerId})
+        ORDER BY started_at DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countByOwner" resultType="long">
+        SELECT COUNT(*)
+        FROM agent_session
+        WHERE project_id IN (SELECT id FROM project WHERE owner_id = #{ownerId})
+    </select>
+
+    <select id="selectByIds" resultType="org.example.tracemind.pojo.entity.AgentSession">
+        SELECT <include refid="baseColumns"/>
+        FROM agent_session
+        WHERE session_id IN
+        <foreach collection="sessionIds" item="sid" open="(" separator="," close=")">
+            #{sid}
+        </foreach>
+        ORDER BY started_at DESC
+    </select>
+
+</mapper>

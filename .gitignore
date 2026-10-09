@@ -1,0 +1,35 @@
+# ───── IDE ─────
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+*.swp
+
+# ───── OS ─────
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ───── 密钥与本地配置（绝不上传）─────
+.env
+.env.*
+!.env.example
+
+# ───── Python 缓存 ─────
+__pycache__/
+*.pyc
+*.egg-info/
+
+# ───── Docker volumes（本地数据目录）─────
+docker-volumes/
+
+# ───── 日志文件 ─────
+*.log
+logs/
+# ───── Node / 前端 ─────
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.tsbuildinfo

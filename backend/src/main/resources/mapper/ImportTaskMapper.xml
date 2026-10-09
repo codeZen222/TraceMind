@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.tracemind.mapper.ImportTaskMapper">
+
+    <sql id="baseColumns">
+        task_id, project_id, total, processed, status, created_at
+    </sql>
+
+    <!-- 进度接口用。查不到返回 null，由 service 抛 40400 -->
+    <select id="selectById" resultType="org.example.tracemind.pojo.entity.ImportTask">
+        SELECT <include refid="baseColumns"/>
+        FROM import_task
+        WHERE task_id = #{taskId}
+    </select>
+
+    <!-- created_at 不写：交给 DB 的 DEFAULT CURRENT_TIMESTAMP -->
+    <insert id="insert">
+        INSERT INTO import_task (task_id, project_id, total, processed, status)
+        VALUES (#{taskId}, #{projectId}, #{total}, #{processed}, #{status})
+    </insert>
+
+    <!-- 每 500 行调一次，是这套流程里最频繁的写库操作 -->
+    <update id="updateProgress">
+        UPDATE import_task
+        SET processed = #{processed},
+            status    = #{status}
+        WHERE task_id = #{taskId}
+    </update>
+
+    <!-- 服务重启时清理僵尸任务 -->
+    <update id="updateRunningToFailed">
+        UPDATE import_task
+        SET status = 'FAILED'
+        WHERE status = 'RUNNING'
+    </update>
+
+    <!-- 查项目下是否有正在执行的导入 -->
+    <select id="findRunningByProjectId" resultType="org.example.tracemind.pojo.entity.ImportTask">
+        SELECT <include refid="baseColumns"/>
+        FROM import_task
+        WHERE project_id = #{projectId} AND status = 'RUNNING'
+        LIMIT 1
+    </select>
+
+    <delete id="deleteByProjectId">
+        DELETE FROM import_task WHERE project_id = #{projectId}
+    </delete>
+</mapper>

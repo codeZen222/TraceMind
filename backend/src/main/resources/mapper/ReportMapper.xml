@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.tracemind.mapper.ReportMapper">
+
+    <sql id="baseColumns">
+        id, project_id, title, session_ids, markdown, log_count, diagnosis_count, created_at
+    </sql>
+
+    <!--
+      列表查询不查 markdown？→ 不，必须查！
+      见 §5.5：前端列表页的「下载 .md」直接拿列表返回的 markdown 拼 Blob，
+      截断或为空都会让下载出来的是残缺文件。
+    -->
+    <!--
+      ★ owner 过滤是【无条件】的：report 表没有 owner 列，靠 project 表转一道。
+      漏掉 = 跨租户看到别人的报告。行级多租户的安全性全押在"每句 SQL 都强制带 owner"上。
+    -->
+    <sql id="whereClause">
+        <where>
+            project_id IN (SELECT id FROM project WHERE owner_id = #{ownerId})
+            <if test="projectId != null and projectId != ''">
+                AND project_id = #{projectId}
+            </if>
+        </where>
+    </sql>
+
+    <select id="selectById" resultType="org.example.tracemind.pojo.entity.Report">
+        SELECT <include refid="baseColumns"/>
+        FROM report
+        WHERE id = #{id}
+    </select>
+
+    <!-- created_at 交给 DB 的 DEFAULT CURRENT_TIMESTAMP -->
+    <insert id="insert">
+        INSERT INTO report (id, project_id, title, session_ids, markdown, log_count, diagnosis_count)
+        VALUES (#{id}, #{projectId}, #{title}, #{sessionIds}, #{markdown}, #{logCount}, #{diagnosisCount})
+    </insert>
+
+    <select id="selectPage" resultType="org.example.tracemind.pojo.entity.Report">
+        SELECT <include refid="baseColumns"/>
+        FROM report
+        <include refid="whereClause"/>
+        ORDER BY created_at DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <select id="countByCondition" resultType="long">
+        SELECT COUNT(*) FROM report
+        <include refid="whereClause"/>
+    </select>
+
+    <select id="countByProject" resultType="long">
+        SELECT COUNT(*) FROM report WHERE project_id = #{projectId}
+    </select>
+
+    <delete id="deleteById">
+        DELETE FROM report WHERE id = #{id}
+    </delete>
+
+</mapper>

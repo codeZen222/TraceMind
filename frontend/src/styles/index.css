@@ -1,0 +1,66 @@
+@import './tokens.css';
+@import './element-override.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --tm-font-sans: "Outfit", "HarmonyOS Sans SC", "PingFang SC",
+                  "Microsoft YaHei", system-ui, sans-serif;
+  --tm-font-mono: "JetBrains Mono", "Maple Mono", "Cascadia Code",
+                  "SFMono-Regular", Consolas, monospace;
+  --tm-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+html, body, #app { height: 100%; }
+
+body {
+  background: var(--tm-bg);
+  color: var(--tm-text-1);
+  font-family: var(--tm-font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--tm-text-1);
+}
+
+/* 统一过渡曲线 */
+* { transition-timing-function: var(--tm-ease); }
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--tm-border-strong);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--tm-text-3); }
+
+/* 等宽块通用 */
+.mono {
+  font-family: var(--tm-font-mono);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* 关键词高亮（XSS 安全：内容由 v-html 注入前先转义） */
+mark.tm-keyword {
+  background: var(--tm-accent-soft);
+  color: var(--tm-accent);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

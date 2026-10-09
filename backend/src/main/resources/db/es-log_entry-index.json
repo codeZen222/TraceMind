@@ -1,0 +1,20 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "mappings": {
+    "properties": {
+      "id":         { "type": "keyword" },
+      "projectId":  { "type": "keyword" },
+      "timestamp":  { "type": "date", "format": "strict_date_optional_time||epoch_millis" },
+      "level":      { "type": "keyword" },
+      "rawText":    { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "template":   { "type": "text", "analyzer": "ik_max_word" },
+      "clusterId":  { "type": "keyword" },
+      "filePath":   { "type": "keyword" },
+      "lineNumber": { "type": "integer" },
+      "stackTrace": { "type": "text", "analyzer": "ik_max_word" }
+    }
+  }
+}

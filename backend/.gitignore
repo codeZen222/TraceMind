@@ -1,0 +1,77 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### OS ###
+.DS_Store
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+### Logs ###
+*.log
+logs/
+
+### JVM crash logs ###
+hs_err_pid*
+replay_pid*
+
+### Temp / Editor backup ###
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+
+### Test coverage ###
+*.exec
+.coverage
+coverage/
+
+### AI tools local workspace ###
+.workbuddy/
+
+### Runtime data ###
+fallback/
+
+### Local sensitive config ###
+application-local.yml
+application-local.properties
+.env
+.env.local
+
+### Personal docs ###
+docs/

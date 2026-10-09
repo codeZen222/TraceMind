@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.tracemind.mapper.LogMonitorTaskMapper">
+
+    <sql id="baseColumns">
+        task_id, project_id, running, file_path, offset, file_size,
+        last_read_at, lines_read, errors_detected, rule_matched, agent_triggered, degraded
+    </sql>
+
+    <select id="selectById" resultType="org.example.tracemind.pojo.entity.LogMonitorTask">
+        SELECT <include refid="baseColumns"/>
+        FROM log_monitor_task
+        WHERE task_id = #{taskId}
+    </select>
+
+    <select id="selectByProjectId" resultType="org.example.tracemind.pojo.entity.LogMonitorTask">
+        SELECT <include refid="baseColumns"/>
+        FROM log_monitor_task
+        WHERE project_id = #{projectId}
+        ORDER BY last_read_at DESC
+        LIMIT 1
+    </select>
+
+    <select id="selectAllRunning" resultType="org.example.tracemind.pojo.entity.LogMonitorTask">
+        SELECT <include refid="baseColumns"/>
+        FROM log_monitor_task
+        WHERE running = 1
+    </select>
+
+    <insert id="insert">
+        INSERT INTO log_monitor_task
+        (task_id, project_id, running, file_path, offset, file_size,
+        lines_read, errors_detected, rule_matched, agent_triggered
+        <if test="degraded != null">, degraded</if>)
+        VALUES (#{taskId}, #{projectId}, #{running}, #{filePath}, #{offset}, #{fileSize},
+        #{linesRead}, #{errorsDetected}, #{ruleMatched}, #{agentTriggered}
+        <if test="degraded != null">, #{degraded}</if>)
+    </insert>
+
+    <update id="updateStatus">
+        UPDATE log_monitor_task
+        SET running         = #{running},
+            offset          = #{offset},
+            file_size       = #{fileSize},
+            last_read_at    = #{lastReadAt},
+            lines_read      = #{linesRead},
+            errors_detected = #{errorsDetected},
+            rule_matched    = #{ruleMatched},
+            agent_triggered = #{agentTriggered},
+            degraded        = #{degraded}
+        WHERE task_id = #{taskId}
+    </update>
+
+    <delete id="deleteByProjectId">
+        DELETE FROM log_monitor_task WHERE project_id = #{projectId}
+    </delete>
+
+</mapper>

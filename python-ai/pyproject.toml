@@ -1,0 +1,140 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trace-mind-ai"
+version = "0.1.0"
+description = "TraceMind 日志诊断推理服务（LangChain）"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "Proprietary" }
+
+# ★ 注意：依赖不在这里声明。
+#   pip 体系下依赖放 requirements/*.in，用 pip-compile 锁定到 *.txt。
+#   这里只放工具配置 —— 一个文件一个职责。
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ══════════════════════════════════════════════════════════
+# ruff —— 风格 + bug 模式
+# ══════════════════════════════════════════════════════════
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+exclude = [".venv", ".data", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "SIM", "RUF", "ASYNC", "S"]
+ignore = [
+    "E501",    # 行宽交给 formatter
+    "S101",    # assert（测试里合法）
+    "B008",    # FastAPI 的 Depends() 默认值写法会触发，属于误报
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+# ★ 契约层必须用 Java 的驼峰字段名，豁免命名规则
+"src/trace_mind_ai/schemas/**" = ["N815"]
+# Dockerfile 里那个健康检查脚本会用到 subprocess 风格调用
+"scripts/**" = ["S603", "S607"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["trace_mind_ai"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ══════════════════════════════════════════════════════════
+# mypy —— 类型一致性
+# ══════════════════════════════════════════════════════════
+[tool.mypy]
+python_version = "3.12"
+files = ["src"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unreachable = true
+no_implicit_optional = true
+check_untyped_defs = true
+strict_equality = true
+show_error_codes = true
+pretty = true
+
+# 第三方库没有类型存根是常态，别让它挡住你
+[[tool.mypy.overrides]]
+module = ["drain3.*", "chromadb.*"]
+ignore_missing_imports = true
+
+# ══════════════════════════════════════════════════════════
+# pytest
+# ══════════════════════════════════════════════════════════
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "integration: 需要真实外部服务（ES / Redis / MySQL）",
+    "slow: 单次执行超过 1 秒",
+]
+filterwarnings = [
+    "error",                              # 警告当错误：别让 deprecation 静默堆积
+    "ignore::DeprecationWarning:chromadb.*",
+    "ignore::DeprecationWarning:langchain.*",
+]
+
+# ══════════════════════════════════════════════════════════
+# 覆盖率
+# ══════════════════════════════════════════════════════════
+[tool.coverage.run]
+source = ["src/trace_mind_ai"]
+omit = ["*/__main__.py"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+    "\\.\\.\\.",
+]
+
+# ══════════════════════════════════════════════════════════
+# 架构守护
+# ══════════════════════════════════════════════════════════
+[tool.importlinter]
+root_packages = ["trace_mind_ai"]
+
+[[tool.importlinter.contracts]]
+name = "分层依赖方向（上层可依赖下层）"
+type = "layers"
+layers = [
+    "trace_mind_ai.api",
+    "trace_mind_ai.agents",
+    "trace_mind_ai.tools",
+    "trace_mind_ai.infra",
+    "trace_mind_ai.core",
+]
+
+[[tool.importlinter.contracts]]
+name = "domain 层不许碰 IO"
+type = "forbidden"
+source_modules = ["trace_mind_ai.domain"]
+forbidden_modules = [
+    "trace_mind_ai.infra",
+    "trace_mind_ai.api",
+    "trace_mind_ai.agents",
+    "elasticsearch",
+    "redis",
+    "sqlalchemy",
+]

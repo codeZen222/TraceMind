@@ -1,0 +1,57 @@
+/* Element Plus 主题对接：颜色全部代理到 TraceMind token */
+:root {
+  --el-color-primary: var(--tm-accent);
+  --el-color-primary-light-3: var(--tm-accent-hover);
+  --el-color-primary-light-5: var(--tm-accent-soft);
+  --el-color-primary-light-7: var(--tm-accent-soft);
+  --el-color-primary-light-8: var(--tm-accent-soft);
+  --el-color-primary-light-9: var(--tm-accent-soft);
+  --el-color-primary-dark-2: var(--tm-accent-hover);
+  --el-bg-color: var(--tm-surface);
+  --el-bg-color-overlay: var(--tm-surface-elevated);
+  --el-fill-color-blank: var(--tm-surface);
+  --el-fill-color-light: var(--tm-code-bg);
+  --el-border-color: var(--tm-border);
+  --el-border-color-light: var(--tm-border);
+  --el-border-color-lighter: var(--tm-border);
+  --el-text-color-primary: var(--tm-text-1);
+  --el-text-color-regular: var(--tm-text-2);
+  --el-text-color-secondary: var(--tm-text-3);
+  --el-font-family: var(--tm-font-sans);
+  --el-box-shadow: var(--tm-shadow);
+  --el-box-shadow-light: var(--tm-shadow);
+  --el-table-row-height: 40px;
+}
+
+/* 表格 / 卡片表面统一 */
+.el-table {
+  --el-table-bg-color: var(--tm-surface);
+  --el-table-tr-bg-color: var(--tm-surface);
+  --el-table-header-bg-color: var(--tm-bg);
+  --el-table-header-text-color: var(--tm-text-2);
+  --el-table-border-color: var(--tm-border);
+}
+
+/* 日志表进一步压缩行高 */
+.el-table.log-table {
+  --el-table-row-height: 36px;
+}
+
+.el-card {
+  --el-card-bg-color: var(--tm-surface);
+  --el-card-border-color: var(--tm-border);
+  border-radius: 10px;
+}
+
+.el-dialog {
+  border-radius: 14px;
+  background: var(--tm-surface-elevated);
+}
+
+.el-drawer {
+  background: var(--tm-surface-elevated);
+}
+
+/* 紧凑密度 */
+.el-button + .el-button { margin-left: 8px; }
+.el-pagination { --el-pagination-bg-color: transparent; }

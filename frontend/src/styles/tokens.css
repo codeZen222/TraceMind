@@ -1,0 +1,70 @@
+:root {
+  /* 品牌强调色：teal，饱和度 < 80%，禁用紫蓝 */
+  --tm-accent:            #0f8a7e;
+  --tm-accent-hover:      #0d786d;
+  --tm-accent-soft:       rgba(15, 138, 126, 0.10);
+
+  /* 语义色 —— 日志级别 */
+  --tm-level-error:       #e5534b;
+  --tm-level-warn:        #d9a441;
+  --tm-level-info:        #4a8fd6;
+  --tm-level-debug:       #8b949e;
+  --tm-level-trace:       #9aa3af;
+
+  /* 诊断三阶段 */
+  --tm-stage-1:           #7d8590;  /* 预处理 */
+  --tm-stage-2:           #0f8a7e;  /* 规则预筛 */
+  --tm-stage-3:           #d9a441;  /* Agent 推理 */
+
+  /* 状态 */
+  --tm-status-running:    #d9a441;
+  --tm-status-success:    #3fa06b;
+  --tm-status-failed:     #e5534b;
+
+  /* 浅色主题表面 */
+  --tm-bg:                #f6f7f9;
+  --tm-surface:           #ffffff;
+  --tm-surface-elevated:  #ffffff;
+  --tm-border:            #e4e7ec;
+  --tm-border-strong:     #d0d5dd;
+  --tm-text-1:            #1a1d21;
+  --tm-text-2:            #5c6470;
+  --tm-text-3:            #98a2b3;
+  --tm-code-bg:           #f3f4f6;
+  --tm-shadow:            0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.06);
+
+  /* 项目分类色（6 色循环，用于同一项目在全站的视觉一致性） */
+  --tm-cat-1:             #0f8a7e;  /* teal */
+  --tm-cat-2:             #4a8fd6;  /* blue */
+  --tm-cat-3:             #d98f2b;  /* amber */
+  --tm-cat-4:             #7b5ea7;  /* violet */
+  --tm-cat-5:             #3fa06b;  /* green */
+  --tm-cat-6:             #b0507a;  /* rose */
+}
+
+html.dark {
+  /* 深色：不是纯黑 */
+  --tm-bg:                #0f1115;
+  --tm-surface:           #161a21;
+  --tm-surface-elevated:  #1c2129;
+  --tm-border:            #262c36;
+  --tm-border-strong:     #333a45;
+  --tm-text-1:            #e6e8eb;
+  --tm-text-2:            #9aa3af;
+  --tm-text-3:            #6b7280;
+  --tm-code-bg:           #10141a;
+  --tm-shadow:            0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.25);
+
+  /* 深色下强调色提亮以保证对比度 */
+  --tm-accent:            #3ec7b0;
+  --tm-accent-hover:      #54dac4;
+  --tm-accent-soft:       rgba(62, 199, 176, 0.12);
+
+  /* 项目分类色（深色下提亮，保证在深底上的对比度） */
+  --tm-cat-1:             #3ec7b0;
+  --tm-cat-2:             #6aa9e8;
+  --tm-cat-3:             #e0a94a;
+  --tm-cat-4:             #a98bd4;
+  --tm-cat-5:             #55c48a;
+  --tm-cat-6:             #d4799e;
+}

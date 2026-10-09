@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.tracemind.mapper.AgentEventMapper">
+
+    <!--
+      useGeneratedKeys：让 MyBatis 把自增 id 回填到对象上。
+      payload 是 JSON 列，传的是 DiagnosisEventVO 序列化后的字符串。
+      ★ 表上有 UNIQUE KEY uk_session_seq (session_id, seq)：
+        同一会话同一 seq 插两次会报 Duplicate entry —— 这正是防重复的保险，
+        但也就意味着 Redis 的 INCR 绝不能重复发号（Redis 重启丢 key 时要注意）
+    -->
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO agent_event (session_id, seq, event_type, payload)
+        VALUES (#{sessionId}, #{seq}, #{eventType}, #{payload})
+    </insert>
+
+    <select id="selectBySession" resultType="org.example.tracemind.pojo.entity.AgentEvent">
+        SELECT id, session_id, seq, event_type, payload, created_at
+        FROM agent_event
+        WHERE session_id = #{sessionId}
+        ORDER BY seq ASC
+    </select>
+
+    <select id="selectAfterSeq" resultType="org.example.tracemind.pojo.entity.AgentEvent">
+        SELECT id, session_id, seq, event_type, payload, created_at
+        FROM agent_event
+        WHERE session_id = #{sessionId} AND seq &gt; #{afterSeq}
+        ORDER BY seq ASC
+    </select>
+
+</mapper>

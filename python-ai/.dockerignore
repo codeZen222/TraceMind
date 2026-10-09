@@ -1,0 +1,27 @@
+.git
+.github
+.gitignore
+.venv
+venv
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+coverage.xml
+
+# ★★★ 密钥绝不能进镜像：
+#   .env 一旦被打进镜像，任何拿到镜像的人都能
+#   `docker run --rm <image> cat /app/.env` 读出 Key
+.env
+.env.*
+!.env.example
+
+.data/
+docs/
+tests/
+scripts/
+*.md
+!README.md

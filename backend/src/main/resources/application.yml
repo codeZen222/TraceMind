@@ -1,0 +1,113 @@
+spring:
+  application:
+    name: TraceMind
+
+  # ---------- MySQL：只存元数据，日志正文一律进 ES ----------
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+    url: jdbc:mysql://127.0.0.1:3306/tracemind?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true
+    username: root
+    password:  ${DB_PASSWORD:123456}
+    hikari:
+      # 探活接口靠这个值保证不被拖死：MySQL 不通时 3 秒内必须给结论
+      connection-timeout: 3000
+      maximum-pool-size: 10
+      minimum-idle: 2
+      pool-name: TraceMindHikariPool
+  servlet:
+    multipart:
+      max-file-size: 100MB       # 单个文件上限
+      max-request-size: 500MB    # 整个请求上限（多文件加起来）
+
+  # ---------- Redis：offset:{taskId} 与 diag:seq:{sessionId} 两个计数器 ----------
+  data:
+    redis:
+      host: 192.168.100.128
+      port: 6379
+      password: ${REDIS_PASSWORD:123456}
+      # 命令超时与连接超时都压到 2s，理由同 MySQL：探活不能被慢依赖拖住
+      timeout: 2s
+      connect-timeout: 2s
+      lettuce:
+        pool:
+          max-active: 10
+          max-idle: 10
+          min-idle: 1
+          time-between-eviction-runs: 10s
+
+  # ---------- Elasticsearch：日志正文的唯一归宿，索引 log_entry ----------
+  elasticsearch:
+    uris: http://192.168.100.128:9200
+    connection-timeout: 2s
+    socket-timeout: 5s
+    # 有账号密码就打开这两行（生产环境必须开）
+    # username: elastic
+    # password: changeme
+
+# ==========================================================
+# TraceMind 自有配置
+# ==========================================================
+tracemind:
+  # Python 推理服务（trace-mind-ai），Java 侧唯一的跨语言出口
+  python:
+    base-url: http://127.0.0.1:8100
+    health-timeout-ms: 2000
+  # LLM 配置只做透传给前端展示，真正调用在 Python 侧
+  model:
+    provider: openai
+    model: qwen-plus
+    base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  # ES 写入失败时的本地兜底
+  fallback:
+    dir: ./fallback/es-retry
+    max-lines-per-file: 10000
+  websocket:
+    # 生产环境必须改成前端实际域名，不要写 localhost
+    allowed-origins:
+      - "http://127.0.0.1:"
+      - "http://localhost:"
+      - "https://127.0.0.1:"
+      - "https://localhost:"
+    # 多租户下必须为 true：强制前端带握手 ticket，否则拿 sessionId 就能偷看别人的诊断过程
+    enable-auth: true
+    # 单节点最大 WS 连接数，按服务器 FD 上限调整
+    max-connections: 1000
+    # 服务端主动心跳间隔（秒），建议 < Nginx proxy_read_timeout
+    heartbeat-interval-sec: 20
+    # 回放单条 send 超时（毫秒），防止慢客户端拖住 Tomcat 线程
+    replay-send-timeout-ms: 200
+
+# 添加服务器端口配置
+server:
+  port: 8080
+  tomcat:
+    relaxed-query-chars:
+      - "["
+      - "]"
+
+# ==========================================================
+# JWT 认证（多租户）
+# ==========================================================
+jwt:
+  # 生产必须用环境变量覆盖；HS256 要求至少 32 字节
+  secret: ${JWT_SECRET:TraceMind-Dev-Secret-Key-Change-Me-In-Production-2026}
+  # token 有效期（秒），默认 7 天
+  expire-seconds: 604800
+
+# ==========================================================
+# 自动诊断（新错误雷达发现新 ERROR 后自动触发诊断 + 报告）
+# ==========================================================
+diagnosis:
+  # 默认开启；运行期可在设置页切换（存 Redis，重启后保留），Redis 不可用时回落到这个默认值
+  auto-trigger: true
+  # 每次扫描最多自动诊断的新错误数（防诊断风暴）
+  auto-trigger-limit: 3
+
+mybatis:
+  mapper-locations: classpath*:/mapper/*.xml
+  configuration:
+    #配置日志
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    #驼峰命名
+    map-underscore-to-camel-case: true

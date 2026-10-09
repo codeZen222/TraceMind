@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.example.tracemind.mapper.ProjectMapper">
+
+    <select id="selectById" resultType="org.example.tracemind.pojo.entity.Project">
+        SELECT id, name, description, status, language, source,
+            log_path, file_count, health_url, source_root, owner_id,
+            created_at, updated_at
+        FROM project
+        WHERE id = #{id}
+    </select>
+
+    <select id="selectByIdAndOwner" resultType="org.example.tracemind.pojo.entity.Project">
+        SELECT id, name, description, status, language, source,
+            log_path, file_count, health_url, source_root, owner_id,
+            created_at, updated_at
+        FROM project
+        WHERE id = #{id} AND owner_id = #{ownerId}
+    </select>
+
+    <insert id="insert">
+        INSERT INTO project (id, name, description, status, language, source,
+                             log_path, file_count, health_url, source_root, owner_id)
+        VALUES (#{id}, #{name}, #{description}, #{status}, #{language}, #{source},
+                #{logPath}, #{fileCount}, #{healthUrl}, #{sourceRoot}, #{ownerId})
+    </insert>
+
+    <update id="update">
+        UPDATE project
+        <set>
+            <if test="name != null">name = #{name},</if>
+            <if test="description != null">description = #{description},</if>
+            <if test="status != null">status = #{status},</if>
+            <if test="language != null">language = #{language},</if>
+            <if test="source != null">source = #{source},</if>
+            <if test="logPath != null">log_path = #{logPath},</if>
+            <if test="healthUrl != null">health_url = #{healthUrl},</if>
+            <if test="sourceRoot != null">source_root = #{sourceRoot},</if>
+            <if test="fileCount != null">file_count = #{fileCount},</if>
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <!--
+        ★ owner 过滤是【无条件】的，不是 <if>：
+        漏掉这一条 = 跨租户数据泄漏（A 能看到 B 的项目）。
+        行级多租户的整个安全性，就押在"每一句 SQL 都强制带 owner_id"这条纪律上。
+    -->
+    <sql id="whereClause">
+        <where>
+            owner_id = #{ownerId}
+            <if test="status != null and status != ''">
+                AND status = #{status}
+            </if>
+            <if test="keyword != null and keyword != ''">
+                AND name LIKE CONCAT('%', #{keyword}, '%')
+            </if>
+        </where>
+    </sql>
+
+    <select id="countByCondition" resultType="long">
+        SELECT COUNT(*) FROM project
+        <include refid="whereClause"/>
+    </select>
+
+    <select id="selectPage" resultType="org.example.tracemind.pojo.entity.Project">
+        SELECT id, name, description, status, language, source,
+        log_path, file_count, health_url, source_root, owner_id,
+        created_at, updated_at
+        FROM project
+        <include refid="whereClause"/>
+        ORDER BY created_at DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+</mapper>

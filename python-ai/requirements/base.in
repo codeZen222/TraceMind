@@ -1,0 +1,40 @@
+# trace-mind-ai :: 生产直接依赖
+#
+# 约定：
+#   · 只写「我直接 import 的包」，间接依赖交给 pip-compile 解
+#   · 约束写 >=x.y,<z 的形式，绝不写 ==（放弃补丁安全更新 = 自找麻烦）
+#   · 改完必须重跑 pip-compile，并提交生成的 .txt
+
+# ───────────── Web 框架 ─────────────
+fastapi>=0.115,<0.200
+uvicorn[standard]>=0.32,<0.40
+
+# ───────────── 配置与校验 ─────────────
+pydantic>=2.9,<3
+pydantic-settings>=2.6,<3
+
+# ───────────── LLM / Agent（1.x = create_agent 时代）─────────────
+langchain>=1.0,<2
+langchain-core>=1.0,<2
+langchain-openai>=1.0,<2
+
+# ───────────── HTTP ─────────────
+httpx>=0.27,<0.30
+
+# ───────────── 存储 ─────────────
+elasticsearch>=8.15,<9
+redis>=5.2,<7
+sqlalchemy[asyncio]>=2.0.36,<3
+asyncmy>=0.2.10,<0.3
+chromadb>=0.5.20,<0.7
+
+# ───────────── 日志 / 指标 ─────────────
+structlog>=24.4,<26
+prometheus-client>=0.21,<0.22
+
+# ───────────── 文本处理 ─────────────
+drain3>=0.9.11,<0.10
+
+# ───────────── 通用工具 ─────────────
+tenacity>=9.0,<10
+orjson>=3.10,<4

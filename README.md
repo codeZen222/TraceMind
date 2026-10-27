@@ -57,7 +57,7 @@ TraceMind 是一款基于 AI 的日志采集、分析与诊断平台。它面向
 
 ```bash
 # 1. 克隆
-git clone https://github.com/your-username/TraceMind.git
+git clone https://github.com/codeZen222/TraceMind.git
 cd TraceMind
 
 # 2. 配置 LLM API Key（必填）
@@ -111,7 +111,7 @@ pnpm dev
 
 ```
 TraceMind/
-├── backend/                # Java 后端服务
+├── backend/                # Java 后端服务（详见 backend/README.md）
 │   ├── src/main/java/.../tracemind/
 │   │   ├── controller/     # REST API 控制器
 │   │   ├── service/        # 业务逻辑层

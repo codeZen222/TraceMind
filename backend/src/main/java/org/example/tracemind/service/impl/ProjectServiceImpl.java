@@ -1,10 +1,11 @@
 package org.example.tracemind.service.impl;
 
 import lombok.extern.slf4j.Slf4j;
-import org.example.tracemind.collector.CollectorRegistry;
+import org.example.tracemind.collector.CollectorOffsetStore;
 import org.example.tracemind.common.BizException;
 import org.example.tracemind.common.IdGenerator;
 import org.example.tracemind.common.PageResult;
+import org.example.tracemind.common.Utilx;
 import org.example.tracemind.common.enums.ProjectSource;
 import org.example.tracemind.common.enums.ProjectStatus;
 import org.example.tracemind.es.EsLogRepository;
@@ -66,22 +67,17 @@ public class ProjectServiceImpl implements ProjectService {
         vo.setFileCount(entity.getFileCount());
         vo.setHealthUrl(entity.getHealthUrl());
         vo.setSourceRoot(entity.getSourceRoot());
-        vo.setCreatedAt(toInstant(entity.getCreatedAt()));
-        vo.setUpdatedAt(toInstant(entity.getUpdatedAt()));
+        vo.setCreatedAt(Utilx.toInstant(entity.getCreatedAt()));
+        vo.setUpdatedAt(Utilx.toInstant(entity.getUpdatedAt()));
         // TODO J2 阶段派生统计先给 0，J3 接 ES、J6 接 agent_session 时再回来改
         vo.setErrorCount24h(0);
         vo.setDiagnosisCount(0);
         return vo;
     }
 
-    /** LocalDateTime → Instant。JDBC url 带了 serverTimezone=UTC，所以按 UTC 解释是对的 */
-    private Instant toInstant(LocalDateTime time) {
-        return time == null ? null : time.toInstant(ZoneOffset.UTC);
-    }
-
-    /** 前端 types/project.ts 里 description / language / logPath 是【不可空】的 string，null 要转成 "" */
+    /** null 转空串，委托 Utilx（本类多处使用，留一层短名便于阅读） */
     private String emptyIfNull(String value) {
-        return value == null ? "" : value;
+        return Utilx.emptyIfNull(value);
     }
 
     /**
@@ -169,6 +165,8 @@ public class ProjectServiceImpl implements ProjectService {
     private MonitorService monitorService;
     @Autowired
     private ImportTaskMapper importTaskMapper;
+    @Autowired
+    private CollectorOffsetStore offsetStore;
     @Override
     public void delete(String id) {
         Project project = projectMapper.selectByIdAndOwner(id, CurrentUser.id());
@@ -186,6 +184,12 @@ public class ProjectServiceImpl implements ProjectService {
         // 2) 清关联子表
         logMonitorTaskMapper.deleteByProjectId(id);
         importTaskMapper.deleteByProjectId(id);
+
+        // 3) ★ 回收 Redis 位点。位点 key 没有 TTL，这里是唯一的清理入口 ——
+        //    漏掉就会随项目删除无限累积孤儿 key（collector:pos:* / collector:fpr:*）
+        if (monitorTask != null) {
+            offsetStore.clear(monitorTask.getTaskId());
+        }
 
         // TODO(J6)：agent_session / report 的清理策略待定
         projectMapper.deleteByIdAndOwner(id, CurrentUser.id());

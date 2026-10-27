@@ -1,4 +1,4 @@
-package org.example.tracemind.config;
+package org.example.tracemind.bootstrap;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

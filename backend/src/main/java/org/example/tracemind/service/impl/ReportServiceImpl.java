@@ -6,7 +6,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.example.tracemind.common.BizException;
 import org.example.tracemind.common.IdGenerator;
 import org.example.tracemind.common.PageResult;
+import org.example.tracemind.common.Utilx;
+import org.example.tracemind.es.EsDocId;
 import org.example.tracemind.es.EsLogRepository;
+import org.example.tracemind.es.LogVoConverter;
 import org.example.tracemind.mapper.AgentSessionMapper;
 import org.example.tracemind.mapper.ProjectMapper;
 import org.example.tracemind.mapper.ReportMapper;
@@ -107,7 +110,7 @@ public class ReportServiceImpl implements ReportService {
         // 日志统计（ES 挂了就降级成空统计，不让报告生成失败）
         LogStatsVO stats = null;
         try {
-            stats = esLogRepository.aggregate(project.getId());
+            stats = LogVoConverter.toStatsVO(esLogRepository.aggregate(project.getId()));
         } catch (Exception e) {
             log.warn("生成报告时取日志统计失败，降级为空统计 projectId={}", project.getId(), e);
         }
@@ -185,12 +188,9 @@ public class ReportServiceImpl implements ReportService {
         if (triggerLogId == null || triggerLogId.isBlank()) {
             return "—";
         }
-        // 只去掉最前面的 projectId 一段，剩下的 fileName:line 原样保留
-        int sep = triggerLogId.indexOf(':');
-        if (sep < 0 || sep + 1 >= triggerLogId.length()) {
-            return triggerLogId;
-        }
-        return triggerLogId.substring(sep + 1);
+        // 交给 EsDocId：此前这里是第三份手写实现（自己 indexOf(':') 拆），
+        // 与生成端的两份实现没有任何同步机制 —— ID 加一段就会错位。
+        return EsDocId.withoutProject(triggerLogId);
     }
 
     private String renderMarkdown(Project project, List<AgentSession> sessions, LogStatsVO stats) {
@@ -319,7 +319,9 @@ public class ReportServiceImpl implements ReportService {
     }
 
     private String format(LocalDateTime t) {
-        return t == null ? "—" : TIME_FMT.format(t.toInstant(ZoneOffset.UTC));
+        // 时区假设统一走 Utilx（此处原是一份内联的 toInstant(UTC)）
+        Instant instant = Utilx.toInstant(t);
+        return instant == null ? "—" : TIME_FMT.format(instant);
     }
 
     private String formatConfidence(DiagnosisResultVO result, AgentSession s) {
@@ -345,7 +347,7 @@ public class ReportServiceImpl implements ReportService {
         vo.setMarkdown(r.getMarkdown());
         vo.setLogCount(r.getLogCount());
         vo.setDiagnosisCount(r.getDiagnosisCount());
-        vo.setCreatedAt(r.getCreatedAt() == null ? null : r.getCreatedAt().toInstant(ZoneOffset.UTC));
+        vo.setCreatedAt(Utilx.toInstant(r.getCreatedAt()));
 
         // session_ids 是 JSON 列，读出来是字符串，转回 List
         if (r.getSessionIds() != null && !r.getSessionIds().isBlank()) {

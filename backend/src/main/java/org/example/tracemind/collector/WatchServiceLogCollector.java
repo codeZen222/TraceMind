@@ -3,8 +3,11 @@ package org.example.tracemind.collector;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.example.tracemind.aiclient.PythonClient;
+import org.example.tracemind.common.RedisKeys;
 import org.example.tracemind.common.enums.LogLevel;
 import org.example.tracemind.config.TraceMindProperties;
+import org.example.tracemind.es.BulkResult;
+import org.example.tracemind.es.EsDocId;
 import org.example.tracemind.es.EsLogRepository;
 import org.example.tracemind.mapper.LogMonitorTaskMapper;
 import org.example.tracemind.pojo.entity.LogEntryDoc;
@@ -62,18 +65,18 @@ public class WatchServiceLogCollector implements Runnable {
     private final String projectId;
     private final String filePath;
 
-    private final StringRedisTemplate redis;
-    private final EsLogRepository esLogRepository;
-    private final PythonClient pythonClient;
-    private final LogMonitorTaskMapper logMonitorTaskMapper;
-    private final CollectorRegistry registry;
-    private final TraceMindProperties properties;
-    private final ObjectMapper objectMapper;
-    private final ErrorRadarService errorRadarService;
+    /** 全部容器 Bean 的打包对象，见 {@link CollectorDependencies} */
+    private final CollectorDependencies deps;
 
     private volatile boolean running = true;
 
-    /** 内存累加器：避免每批都写 MySQL */
+    /**
+     * 内存累加器：避免每批都写 MySQL。
+     *
+     * <p>⚠️ 初值必须从 {@link CollectorOffsetStore} 恢复（由 {@link #init()} 在启动前完成），
+     * 不能默认 0 —— 它决定 ES 文档 ID 里的行号部分，归零会让新行覆盖旧行。
+     * 每次 flush 后随 offset 一起写回 store（同一个 Hash，原子推进）。</p>
+     */
     private long linesRead;
     private long errorsDetected;
     private long ruleMatched;
@@ -84,25 +87,25 @@ public class WatchServiceLogCollector implements Runnable {
     public WatchServiceLogCollector(String taskId,
                                     String projectId,
                                     String filePath,
-                                    StringRedisTemplate redis,
-                                    EsLogRepository esLogRepository,
-                                    PythonClient pythonClient,
-                                    LogMonitorTaskMapper logMonitorTaskMapper,
-                                    CollectorRegistry registry,
-                                    TraceMindProperties properties,
-                                    ObjectMapper objectMapper,
-                                    ErrorRadarService errorRadarService) {
+                                    CollectorDependencies deps) {
         this.taskId = taskId;
         this.projectId = projectId;
         this.filePath = filePath;
-        this.redis = redis;
-        this.esLogRepository = esLogRepository;
-        this.pythonClient = pythonClient;
-        this.logMonitorTaskMapper = logMonitorTaskMapper;
-        this.registry = registry;
-        this.properties = properties;
-        this.objectMapper = objectMapper;
-        this.errorRadarService = errorRadarService;
+        this.deps = deps;
+        // ★ 构造器里不做任何 I/O：位点恢复交给 init()，由工厂/调用方在启动线程前显式调用。
+        //   此前这里直接 read Redis+MySQL，导致测试无法 new 出一个"干净初始态"的对象
+        //   （必须先 stub 好 Redis 才能构造），也无法 mock 一个 collector 而不触碰外部系统。
+    }
+
+    /**
+     * 恢复续读状态。必须在把实例交给线程池<b>之前</b>调用一次。
+     *
+     * <p>之所以不放在构造器也不放在 {@code run()} 里：放构造器会引入构造期 I/O；
+     * 放 {@code run()} 则"已构造但未初始化"的状态可能被误用（比如 stop→start 复用时漏调）。
+     * 显式一个方法、由工厂统一负责调用，时序最清楚。</p>
+     */
+    public void init() {
+        this.linesRead = deps.getOffsetStore().read(taskId).lines();
     }
 
     /** 停止信号。线程会在当前这一轮跑完后退出 */
@@ -153,7 +156,7 @@ public class WatchServiceLogCollector implements Runnable {
             log.error("采集线程异常退出 taskId={}", taskId, e);
         } finally {
             // ★ 两件收尾的事，缺一不可
-            registry.unregister(taskId);   // 从登记表摘掉，否则 stop 会拿到一个死线程
+            deps.getRegistry().unregister(taskId);   // 从登记表摘掉，否则 stop 会拿到一个死线程
             writeMysqlSnapshot(false);     // 最后一次快照，running=false
             log.info("采集线程已退出 taskId={}，累计 {} 行 / {} 个 ERROR",
                     taskId, linesRead, errorsDetected);
@@ -166,7 +169,7 @@ public class WatchServiceLogCollector implements Runnable {
 
     private void readNewLines() {
         try (RandomAccessFile raf = new RandomAccessFile(filePath, "r")) {
-            long offset = offsetFromRedis();
+            long offset = deps.getOffsetStore().read(taskId).offset();
 
             // ★ 文件身份校验：创建时间 + 首行哈希
             String currentFingerprint = computeFingerprint(raf);
@@ -206,7 +209,7 @@ public class WatchServiceLogCollector implements Runnable {
                 if (full || due) {
                     flush(batch);
                     batch.clear();
-                    redis.opsForValue().set("offset:" + taskId, String.valueOf(raf.getFilePointer()));
+                    savePosition(raf);
                 }
 
                 if (linesThisRound >= MAX_LINES_PER_ROUND
@@ -222,8 +225,8 @@ public class WatchServiceLogCollector implements Runnable {
                 batch.clear();
             }
 
-            redis.opsForValue().set("offset:" + taskId, String.valueOf(raf.getFilePointer()));
-            redis.opsForValue().set("fingerprint:" + taskId, currentFingerprint);
+            savePosition(raf);
+            saveFingerprint(currentFingerprint);
         } catch (FileNotFoundException e) {
             log.warn("日志文件不存在，跳过本轮。taskId={} path={}", taskId, filePath);
         } catch (IOException e) {
@@ -257,26 +260,35 @@ public class WatchServiceLogCollector implements Runnable {
         return createTime + ":" + hash;
     }
 
-    private String fingerprintFromRedis() {
-        return redis.opsForValue().get("fingerprint:" + taskId);
+    /**
+     * 把当前读取位置和累计行数一起写回 store。
+     *
+     * <p>必须在 flush 之后调用——flush 会推进 {@link #linesRead}，
+     * 两个值同源同时落盘，才不会出现「offset 到了第 5000 行、linesRead 还是 0」这种半恢复。</p>
+     */
+    private void savePosition(RandomAccessFile raf) throws IOException {
+        deps.getOffsetStore().write(taskId, raf.getFilePointer(), linesRead);
     }
 
-    private long offsetFromRedis() {
-        String v = redis.opsForValue().get("offset:" + taskId);
-        if (v != null) {
-            try {
-                return Long.parseLong(v);
-            } catch (NumberFormatException e) {
-                log.warn("Redis 里的 offset 不是数字，尝试 MySQL 兜底。taskId={} value={}", taskId, v);
-            }
+    /**
+     * 指纹只用于判断「文件被替换」，丢了最多多读一轮，不是关键路径。
+     * 所以 Redis 挂了静默跳过，绝不让采集线程因为一个辅助 key 写失败而退出。
+     */
+    private void saveFingerprint(String fingerprint) {
+        try {
+            deps.getRedis().opsForValue().set(RedisKeys.collectorFingerprint(taskId), fingerprint);
+        } catch (Exception e) {
+            log.warn("写文件指纹失败，本轮跳过（不影响读取）。taskId={} 原因={}", taskId, e.getMessage());
         }
-        // Redis 没有 → 从 MySQL 兜底快照恢复
-        LogMonitorTask task = logMonitorTaskMapper.selectById(taskId);
-        if (task != null && task.getOffset() != null && task.getOffset() > 0) {
-            log.warn("Redis offset 缺失，从 MySQL 兜底恢复 offset={} taskId={}", task.getOffset(), taskId);
-            return task.getOffset();
+    }
+
+    private String fingerprintFromRedis() {
+        try {
+            return deps.getRedis().opsForValue().get(RedisKeys.collectorFingerprint(taskId));
+        } catch (Exception e) {
+            log.warn("读文件指纹失败，按无指纹处理。taskId={} 原因={}", taskId, e.getMessage());
+            return null;
         }
-        return 0L;
     }
 
     // ==================================================================
@@ -284,14 +296,16 @@ public class WatchServiceLogCollector implements Runnable {
     // ==================================================================
 
     private void flush(List<String> lines) {
-        List<PythonClient.ParseResult> parsed = pythonClient.parse(projectId, lines);
+        List<PythonClient.ParseResult> parsed = deps.getPythonClient().parse(projectId, lines);
 
         String now = Instant.now().toString();
         List<LogEntryDoc> docs = new ArrayList<>(lines.size());
         for (int i = 0; i < lines.size(); i++) {
             String raw = lines.get(i);
             LogEntryDoc doc = new LogEntryDoc();
-            doc.setId(projectId + ":" + filePath + ":" + (linesRead + i + 1));
+            // ★ ID 一律走 EsDocId（内部会把 filePath 归一成裸文件名，与导入链路同形）。
+            //   而 filePath 字段本身保留绝对路径 —— 它是"数据从哪来"的信息，不参与主键。
+            doc.setId(EsDocId.of(projectId, filePath, (int) (linesRead + i + 1)));
             doc.setProjectId(projectId);
             doc.setTimestamp(now);
             doc.setRawText(raw);
@@ -306,14 +320,22 @@ public class WatchServiceLogCollector implements Runnable {
             docs.add(doc);
         }
 
-        boolean success = false;
-        for (int retry = 0; retry < MAX_RETRY; retry++) {
+        /*
+         * ★ 只重试、只落盘「还没成功的那部分」。
+         *
+         *   原先用 boolean success 表示整批结果，有两个后果：
+         *   ① 部分失败时 bulkInsert 不抛 → success=true → 失败的条目既不进 ES 也不进兜底文件，静默消失；
+         *   ② 整批重试会把已写成功的条目重复投 2 遍（ES 文档 ID 幂等所以不错数据，但纯浪费）。
+         *   现在 pending 逐轮收敛到只剩真失败的，最终落盘的也是这个子集。
+         */
+        List<LogEntryDoc> pending = docs;
+        for (int retry = 0; retry < MAX_RETRY && !pending.isEmpty(); retry++) {
             try {
-                esLogRepository.bulkInsert(docs);
-                success = true;
-                break;
+                BulkResult result = deps.getEsLogRepository().bulkInsert(pending);
+                pending = result.failedDocs();
             } catch (Exception e) {
-                log.warn("ES 写入失败，准备重试 {}/{} taskId={}", retry + 1, MAX_RETRY, taskId, e);
+                log.warn("ES 写入失败，准备重试 {}/{} taskId={} 待写={}",
+                        retry + 1, MAX_RETRY, taskId, pending.size(), e);
                 if (retry < MAX_RETRY - 1) {
                     try {
                         Thread.sleep(1000L * (retry + 1));
@@ -325,10 +347,10 @@ public class WatchServiceLogCollector implements Runnable {
             }
         }
 
-        if (!success) {
-            writeToLocalFallback(docs);
-            log.error("ES 写入 {} 次重试全部失败，已写入本地兜底文件 taskId={} count={}",
-                    MAX_RETRY, taskId, docs.size());
+        if (!pending.isEmpty()) {
+            writeToLocalFallback(pending);
+            log.error("ES 写入 {} 次重试后仍有 {} 条未成功（本批共 {} 条），已写入本地兜底文件 taskId={}",
+                    MAX_RETRY, pending.size(), docs.size(), taskId);
         }
 
         linesRead += docs.size();
@@ -343,7 +365,7 @@ public class WatchServiceLogCollector implements Runnable {
             }
         }
         if (!errorClusters.isEmpty()) {
-            errorRadarService.scan(projectId, errorClusters);
+            deps.getErrorRadarService().scan(projectId, errorClusters);
         }
         // TODO(J6)：这里接诊断触发的钩子 —— 连续 N 个 ERROR 时调 /api/diagnosis/trigger
         //           现在 agentTriggered 恒为 0
@@ -360,7 +382,7 @@ public class WatchServiceLogCollector implements Runnable {
 
     private void writeToLocalFallback(List<LogEntryDoc> docs) {
         try {
-            String fallbackDir = properties.getFallback().getDir();
+            String fallbackDir = deps.getProperties().getFallback().getDir();
             Path dirPath = Paths.get(fallbackDir);
             if (!Files.exists(dirPath)) {
                 Files.createDirectories(dirPath);
@@ -373,7 +395,7 @@ public class WatchServiceLogCollector implements Runnable {
 
             try (BufferedWriter writer = Files.newBufferedWriter(filePath, StandardCharsets.UTF_8)) {
                 for (LogEntryDoc doc : docs) {
-                    writer.write(objectMapper.writeValueAsString(doc));
+                    writer.write(deps.getObjectMapper().writeValueAsString(doc));
                     writer.newLine();
                 }
             }
@@ -394,27 +416,29 @@ public class WatchServiceLogCollector implements Runnable {
     }
 
     /**
-     * 回写 MySQL。
+     * 回写 MySQL 兜底快照。
      *
-     * <p>Redis 是 offset 的真身，这张表只是「重启后能知道大概读到哪了」的兜底。
-     * offset 用 Redis 的实时值，不用内存里的。</p>
+     * <p>Redis 是位点的真身，这张表只是「Redis 空了也能知道大概读到哪了」的兜底，
+     * 所以 offset / linesRead 都取 store 的实时值，不用内存里的——
+     * 内存值在 Redis 故障期间可能已经领先或落后于持久化值，以 store 为准两边才对得上。</p>
      */
     private void writeMysqlSnapshot(boolean running) {
         try {
-            LogMonitorTask task = logMonitorTaskMapper.selectById(taskId);
+            LogMonitorTask task = deps.getLogMonitorTaskMapper().selectById(taskId);
             if (task == null) {
                 return;
             }
+            CollectorOffsetStore.Position pos = deps.getOffsetStore().read(taskId);
             task.setRunning(running);
-            task.setOffset(offsetFromRedis());
+            task.setOffset(pos.offset());
             task.setFileSize(Paths.get(filePath).toFile().length());
             task.setLastReadAt(LocalDateTime.ofInstant(Instant.now(), ZoneOffset.UTC));
-            task.setLinesRead(linesRead);
+            task.setLinesRead(pos.lines());
             task.setErrorsDetected((int) errorsDetected);
             task.setRuleMatched((int) ruleMatched);
             task.setAgentTriggered((int) agentTriggered);
-            task.setDegraded(pythonClient.isDegraded());
-            logMonitorTaskMapper.updateStatus(task);
+            task.setDegraded(deps.getPythonClient().isDegraded());
+            deps.getLogMonitorTaskMapper().updateStatus(task);
             lastMysqlSync = System.currentTimeMillis();
         } catch (Exception e) {
             log.warn("回写 log_monitor_task 失败 taskId={} 原因={}", taskId, e.getMessage());

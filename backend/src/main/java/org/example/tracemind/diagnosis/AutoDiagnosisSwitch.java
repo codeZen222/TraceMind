@@ -1,6 +1,7 @@
-package org.example.tracemind.config;
+package org.example.tracemind.diagnosis;
 
 import lombok.extern.slf4j.Slf4j;
+import org.example.tracemind.common.RedisKeys;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -16,7 +17,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class AutoDiagnosisSwitch {
 
-    private static final String KEY = "diag:auto-trigger";
+    private static final String KEY = RedisKeys.DIAGNOSIS_AUTO_TRIGGER;
 
     private final StringRedisTemplate redis;
     private final boolean defaultEnabled;

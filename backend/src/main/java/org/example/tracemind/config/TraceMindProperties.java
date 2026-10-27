@@ -22,7 +22,24 @@ public class TraceMindProperties {
 
     private Fallback fallback = new Fallback();
 
+    /** 日志导入的暂存配置（yml 键 {@code tracemind.upload}） */
+    private Upload upload = new Upload();
+
     private WebSocket websocket = new WebSocket();
+
+    /**
+     * 上传文件的接管目录。
+     *
+     * <p>必须落在<b>应用自己管的路径</b>上：Servlet 容器给请求用的临时目录会在请求结束时被清理，
+     * 而导入是异步任务、跑得比请求活得久（详见 {@code LogSource} 的说明）。
+     * 之所以不叫 {@code import} —— 那是 Java 关键字，字段名会直接编译失败。</p>
+     */
+    @Data
+    public static class Upload {
+
+        /** 上传文件接管后的存放目录，导入结束（成功或失败）后由应用负责删除 */
+        private String stagingDir = "./upload-staging";
+    }
 
     /** Python 推理服务（trace-mind-ai）的连接参数 */
     @Data
@@ -59,6 +76,14 @@ public class TraceMindProperties {
 
         /** 单个兜底文件最大条数，超过就滚动生成新文件 */
         private int maxLinesPerFile = 10000;
+
+        /**
+         * 一个兜底文件最多被重放几次，超过则移入 {@code dead/} 并告警。
+         *
+         * <p>为什么必须有上限：某些文档可能永久写不进 ES（例如索引 mapping 在数据落盘后被收紧）。
+         * 没有上限时这个文件会每分钟被读一次、永远存在 —— 兜底机制自己变成新的资源泄漏。</p>
+         */
+        private int maxReplayAttempts = 10;
     }
 
     /** WebSocket 推送端点配置 */

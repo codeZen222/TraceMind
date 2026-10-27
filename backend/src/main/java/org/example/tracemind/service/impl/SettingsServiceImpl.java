@@ -6,7 +6,7 @@ import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.example.tracemind.aiclient.PythonClient;
-import org.example.tracemind.config.AutoDiagnosisSwitch;
+import org.example.tracemind.diagnosis.AutoDiagnosisSwitch;
 import org.example.tracemind.config.TraceMindProperties;
 import org.example.tracemind.pojo.vo.HealthItemVO;
 import org.example.tracemind.pojo.vo.ModelInfoVO;

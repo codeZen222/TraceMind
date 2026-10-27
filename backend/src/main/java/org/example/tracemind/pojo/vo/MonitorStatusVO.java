@@ -26,13 +26,14 @@ public class MonitorStatusVO implements Serializable {
 
     private String filePath;
 
-    /** 已读字节偏移（真身在 Redis offset:{taskId}） */
+    /** 已读字节偏移（真身在 Redis collector:pos:{taskId}，Redis 不可用时回落 MySQL 快照） */
     private Long offset;
 
     private Long fileSize;
 
     private Instant lastReadAt;
 
+    /** 累计已读行数。ES 文档 ID 里的行号由它推导，重启后续读必须接着上次的值 */
     private Long linesRead;
 
     private Integer errorsDetected;
@@ -41,8 +42,24 @@ public class MonitorStatusVO implements Serializable {
 
     private Integer agentTriggered;
 
-    /** Python 推理服务是否不可用（降级模式） */
-    private Boolean degraded;
+    /**
+     * Python AI 服务不可用（熔断打开）。
+     *
+     * <p>影响面：<b>只有模板提取与聚类</b>——日志照常采集入库，{@code template / clusterId} 留空，
+     * 阶段 1、2 的规则诊断也不受影响（它们不依赖 Drain3 的新模板）。
+     * 见 {@code PythonClient#isDegraded()}。</p>
+     */
+    private Boolean aiDegraded;
+
+    /**
+     * 位点存储（Redis）不可用，当前 {@code offset / linesRead} 读的是 MySQL 兜底快照。
+     *
+     * <p>和 {@link #aiDegraded} 是两种完全不同的故障：这里不影响任何日志内容，
+     * 只是进度可能滞后最多 30 秒（快照周期），恢复后可能重读若干行。
+     * 拆成两个字段是因为混在一个布尔里时，前端和用户都分不清该找谁——
+     * 一个要去看 AI 服务，一个要去看 Redis。</p>
+     */
+    private Boolean positionDegraded;
 
     /** 无任务时用的空壳对象，避免前端判空 */
     public static MonitorStatusVO empty(String projectId) {
@@ -55,7 +72,8 @@ public class MonitorStatusVO implements Serializable {
         vo.setErrorsDetected(0);
         vo.setRuleMatched(0);
         vo.setAgentTriggered(0);
-        vo.setDegraded(false);
+        vo.setAiDegraded(false);
+        vo.setPositionDegraded(false);
         return vo;
     }
 }

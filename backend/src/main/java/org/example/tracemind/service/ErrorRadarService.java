@@ -2,8 +2,9 @@ package org.example.tracemind.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.example.tracemind.common.Utilx;
 import org.example.tracemind.common.enums.SessionStatus;
-import org.example.tracemind.config.AutoDiagnosisSwitch;
+import org.example.tracemind.diagnosis.AutoDiagnosisSwitch;
 import org.example.tracemind.config.AsyncConfig;
 import org.example.tracemind.es.EsLogRepository;
 import org.example.tracemind.mapper.AgentSessionMapper;
@@ -250,8 +251,8 @@ public class ErrorRadarService {
         seenCache.computeIfAbsent(projectId, k -> ConcurrentHashMap.newKeySet()).addAll(clusterIds);
     }
 
-    /** 库里 DATETIME 存 UTC，转 ISO 字符串给前端 */
+    /** 库里 DATETIME 存 UTC，转 ISO 字符串给前端（委托 Utilx —— 此前这是第五份同类副本） */
     private String toIso(LocalDateTime t) {
-        return t == null ? null : t.toInstant(ZoneOffset.UTC).toString();
+        return Utilx.toIsoUtc(t);
     }
 }

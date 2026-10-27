@@ -10,7 +10,8 @@ import java.util.List;
  * log_monitor_task 表出口。
  *
  * <p>⚠️ 这张表里也有 {@code offset} 字段，但它是<b>兜底快照</b>，
- * 真身在 Redis 的 {@code offset:{taskId}}。查状态时要优先用 Redis 的值。</p>
+ * 真身在 Redis 的 {@code collector:pos:{taskId}}（Hash，含 offset / lines 两个 field）。
+ * 位点读写一律走 {@link org.example.tracemind.collector.CollectorOffsetStore}，不要在这里直连 Redis。</p>
  */
 @Mapper
 public interface LogMonitorTaskMapper {

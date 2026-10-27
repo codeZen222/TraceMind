@@ -2,6 +2,7 @@ package org.example.tracemind.aiclient;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.example.tracemind.common.Utilx;
 import org.example.tracemind.config.TraceMindProperties;
 import org.example.tracemind.pojo.vo.ChatMessageVO;
 import org.example.tracemind.pojo.vo.DiagnosisEventVO;
@@ -87,8 +88,8 @@ public class PythonClient {
             return new HealthProbe(true, costMs, extractLlmOk(body), extractLlmLatencyMs(body), null);
         } catch (Exception e) {
             long costMs = elapsedMs(start);
-            log.warn("Python /v1/health 探测失败（耗时 {}ms）: {}", costMs, rootMessage(e));
-            return new HealthProbe(false, costMs, null, null, rootMessage(e));
+            log.warn("Python /v1/health 探测失败（耗时 {}ms）: {}", costMs, Utilx.rootMessage(e));
+            return new HealthProbe(false, costMs, null, null, Utilx.rootMessage(e));
         }
     }
 
@@ -132,14 +133,8 @@ public class PythonClient {
         return (System.nanoTime() - startNanos) / 1_000_000;
     }
 
-    private String rootMessage(Throwable e) {
-        Throwable cause = e;
-        while (cause.getCause() != null && cause.getCause() != cause) {
-            cause = cause.getCause();
-        }
-        String message = cause.getMessage();
-        return message == null ? cause.getClass().getSimpleName() : message;
-    }
+    // rootMessage 已收口到 common/Utilx。此前这里是第一份私有副本：
+    // 它只挡了自引用（cause.getCause() == cause），对 A→B→A 这种两元素环照样转不出来。
 
     /**
      * 探活结果。
@@ -226,7 +221,7 @@ public class PythonClient {
         if (consecutiveFailures >= CB_FAILURE_THRESHOLD) {
             circuitOpen = true;
             log.warn("Python 连续失败 {} 次，熔断 {}s。原因={}",
-                    consecutiveFailures, CB_RETRY_INTERVAL_MS / 1000, rootMessage(e));
+                    consecutiveFailures, CB_RETRY_INTERVAL_MS / 1000, Utilx.rootMessage(e));
         }
     }
 

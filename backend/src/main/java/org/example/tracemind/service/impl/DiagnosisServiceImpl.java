@@ -6,9 +6,11 @@ import org.example.tracemind.aiclient.PythonClient;
 import org.example.tracemind.common.BizException;
 import org.example.tracemind.common.IdGenerator;
 import org.example.tracemind.common.PageResult;
+import org.example.tracemind.common.Utilx;
 import org.example.tracemind.common.enums.SessionStatus;
-import org.example.tracemind.diagnosis.WsSessionRegistry;
+import org.example.tracemind.diagnosis.DiagnosisEventPipeline;
 import org.example.tracemind.es.EsLogRepository;
+import org.example.tracemind.es.LogVoConverter;
 import org.example.tracemind.mapper.AgentEventMapper;
 import org.example.tracemind.mapper.AgentSessionMapper;
 import org.example.tracemind.mapper.ChatMessageMapper;
@@ -18,15 +20,16 @@ import org.example.tracemind.pojo.dto.DiagnosisTriggerDTO;
 import org.example.tracemind.pojo.entity.AgentEvent;
 import org.example.tracemind.pojo.entity.AgentSession;
 import org.example.tracemind.pojo.entity.ChatMessage;
+import org.example.tracemind.pojo.entity.LogEntryDoc;
 import org.example.tracemind.pojo.entity.Project;
 import org.example.tracemind.pojo.vo.*;
 import org.example.tracemind.service.DiagnosisService;
+import org.example.tracemind.service.StreamSink;
 import org.example.tracemind.service.OwnershipGuard;
 import org.example.tracemind.security.CurrentUser;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -42,9 +45,6 @@ import java.util.concurrent.Executor;
 @Service
 public class DiagnosisServiceImpl implements DiagnosisService {
 
-    /** seq 发号器的 Redis key 前缀 */
-    private static final String SEQ_KEY = "diag:seq:";
-
     /** 诊断整体超时（毫秒）。超过就判失败，不让前端无限等 */
     private static final long DIAGNOSIS_TIMEOUT_MS = 120_000L;
 
@@ -54,7 +54,7 @@ public class DiagnosisServiceImpl implements DiagnosisService {
     private final ChatMessageMapper chatMessageMapper;
     private final EsLogRepository esLogRepository;
     private final PythonClient pythonClient;
-    private final WsSessionRegistry wsSessionRegistry;
+    private final DiagnosisEventPipeline eventPipeline;
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
     private final Executor diagnosisExecutor;
@@ -66,7 +66,7 @@ public class DiagnosisServiceImpl implements DiagnosisService {
                                 ChatMessageMapper chatMessageMapper,
                                 EsLogRepository esLogRepository,
                                 PythonClient pythonClient,
-                                WsSessionRegistry wsSessionRegistry,
+                                DiagnosisEventPipeline eventPipeline,
                                 StringRedisTemplate redis,
                                 ObjectMapper objectMapper,
                                 @Qualifier("diagnosisExecutor") Executor diagnosisExecutor,
@@ -80,7 +80,7 @@ public class DiagnosisServiceImpl implements DiagnosisService {
         this.chatMessageMapper = chatMessageMapper;
         this.esLogRepository = esLogRepository;
         this.pythonClient = pythonClient;
-        this.wsSessionRegistry = wsSessionRegistry;
+        this.eventPipeline = eventPipeline;
         this.redis = redis;
         this.objectMapper = objectMapper;
         this.diagnosisExecutor = diagnosisExecutor;
@@ -96,10 +96,12 @@ public class DiagnosisServiceImpl implements DiagnosisService {
         // 1) 项目必须存在，且归属当前用户
         ownershipGuard.requireOwned(dto.getProjectId());
         // 2) 触发日志必须存在，而且必须属于这个项目 —— 归属校验不能省
-        LogEntryVO triggerLog = esLogRepository.getById(dto.getLogId());
-        if (triggerLog == null || !dto.getProjectId().equals(triggerLog.getProjectId())) {
+        //    ★ 仓储返回 Doc，先校验再转 VO（避免对不存在的日志做一次无谓拷贝）
+        LogEntryDoc triggerDoc = esLogRepository.getById(dto.getLogId());
+        if (triggerDoc == null || !dto.getProjectId().equals(triggerDoc.getProjectId())) {
             throw BizException.notFound("日志不存在: " + dto.getLogId());
         }
+        LogEntryVO triggerLog = LogVoConverter.toVO(triggerDoc);
         String sessionId = doTrigger(dto.getProjectId(), dto.getLogId(), triggerLog);
         // 立刻返回 RUNNING 的会话，前端拿 sessionId 去连 WS
         return getById(sessionId);
@@ -109,12 +111,12 @@ public class DiagnosisServiceImpl implements DiagnosisService {
     public String triggerAuto(String projectId, String logId) {
         // ★ 不做归属校验：自动诊断跑在导入/采集的异步线程里，拿不到 SecurityContext。
         //   归属已在入口（startImport / monitor start）校验过，这里只做「日志存在且属于项目」。
-        LogEntryVO triggerLog = esLogRepository.getById(logId);
-        if (triggerLog == null || !projectId.equals(triggerLog.getProjectId())) {
+        LogEntryDoc triggerDoc = esLogRepository.getById(logId);
+        if (triggerDoc == null || !projectId.equals(triggerDoc.getProjectId())) {
             log.warn("自动诊断跳过：日志不存在或不属于项目。projectId={} logId={}", projectId, logId);
             return null;
         }
-        return doTrigger(projectId, logId, triggerLog);
+        return doTrigger(projectId, logId, LogVoConverter.toVO(triggerDoc));
     }
 
     /**
@@ -132,7 +134,7 @@ public class DiagnosisServiceImpl implements DiagnosisService {
         agentSessionMapper.insert(session);
 
         // 清掉可能残留的计数器（正常情况不会有，防的是上次同名会话的脏 key）
-        redis.delete(SEQ_KEY + sessionId);
+        eventPipeline.resetSequence(sessionId);
         log.info("诊断已触发 sessionId={} projectId={} logId={}",
                 sessionId, projectId, logId);
 
@@ -163,7 +165,7 @@ public class DiagnosisServiceImpl implements DiagnosisService {
         } catch (Exception e) {
             log.error("诊断失败 sessionId={}", sessionId, e);
             // ★ 降级而不是 500：把失败如实记成一条 error 事件，前端能展示"诊断服务不可用"
-            handleEvent(sessionId, DiagnosisEventVO.error(0, "诊断服务不可用: " + rootMessage(e)), startMs);
+            handleEvent(sessionId, DiagnosisEventVO.error(0, "诊断服务不可用: " + Utilx.rootMessage(e)), startMs);
             agentSessionMapper.updateStatus(sessionId, SessionStatus.FAILED.name());
         }
     }
@@ -193,8 +195,9 @@ public class DiagnosisServiceImpl implements DiagnosisService {
     /**
      * 处理一个诊断事件。
      *
-     * <p><b>铁律</b>：{@code seq = INCR} → {@code 落 agent_event} → {@code 推 WS}。
-     * 先推后落的话，用户刷新页面做历史回放会缺事件 —— 回放读的是库，事件还没落进去。</p>
+     * <p>★ 「发号 → 落库 → 推送」这条铁律流水线本身已拆到 {@link DiagnosisEventPipeline}
+     * （它有自己的失败语义，且此前是个故意不进接口的 public 方法）。这里只保留<b>会话状态机</b>
+     * ——那部分含业务不变量（如「命中过规则的会话不可能走过 LLM」），属于领域规则不该和传输混在一起。</p>
      *
      * @param startMs 本次诊断的起始时刻（{@code System.currentTimeMillis()}）。
      *                一路传进来是为了在收尾事件里算出真实的 {@code total_cost_ms} ——
@@ -202,39 +205,14 @@ public class DiagnosisServiceImpl implements DiagnosisService {
      *                于是前端会话列表、诊断元信息、导出报告里「耗时」全是 {@code --}。
      */
     public void handleEvent(String sessionId, DiagnosisEventVO event, long startMs) {
-        // 1) 发号。Redis 挂了这里返回 null，事件只能丢 —— 但不会影响已经落库的部分
-        Long seq;
-        try {
-
-            seq = redis.opsForValue().increment(SEQ_KEY + sessionId);
-        } catch (Exception e) {
-            log.error("Redis 不可用，无法生成 seq，该事件不落库也不推送 sessionId={} type={}",
-                    sessionId, event.getType(), e);
-            return;
-        }
+        Integer seq = eventPipeline.publish(sessionId, event);
         if (seq == null) {
-            log.error("seq 发号返回 null，跳过 sessionId={}", sessionId);
+            // 发号失败：事件已被流水线丢弃。会话统计也不该跟着更新，否则会出现
+            // "库里没有这条事件、但会话状态被它改了"的对不上账
             return;
         }
 
-        // 2) 先落库
-        try {
-            AgentEvent row = new AgentEvent();
-            row.setSessionId(sessionId);
-            row.setSeq(seq.intValue());
-            row.setEventType(event.getType());
-            row.setPayload(objectMapper.writeValueAsString(event));
-            agentEventMapper.insert(row);
-        } catch (Exception e) {
-            // 落库失败仍然继续推送：用户至少能看到实时过程，
-            // 代价是这条事件不会出现在历史回放里 —— 让它可见比让它完美重要
-            log.error("事件落库失败 sessionId={} seq={} type={}", sessionId, seq, event.getType(), e);
-        }
-
-        // 3) 后推送（没人听就自动跳过，不影响落库）
-        wsSessionRegistry.send(sessionId, WsMessageVO.of(seq.intValue(), sessionId, event));
-
-        // 4) 按类型更新会话统计
+        // 4) 按类型更新会话统计（领域状态机，留在本类）
         try {
             applyToSession(sessionId, event, startMs);
         } catch (Exception e) {
@@ -324,7 +302,7 @@ public class DiagnosisServiceImpl implements DiagnosisService {
 
         // 触发日志（前端详情页要展示"是哪条日志触发的"）
         if (session.getTriggerLogId() != null) {
-            vo.setTriggerLog(esLogRepository.getById(session.getTriggerLogId()));
+            vo.setTriggerLog(LogVoConverter.toVO(esLogRepository.getById(session.getTriggerLogId())));
         }
 
         // 历史事件回放 —— 前端刷新页面后靠它把过程重建出来
@@ -368,7 +346,7 @@ public class DiagnosisServiceImpl implements DiagnosisService {
             DiagnosisSessionVO vo = toVO(row);
             // triggerLog 只要摘要；这里给全量也没问题，前端只用其中几个字段
             if (row.getTriggerLogId() != null) {
-                vo.setTriggerLog(esLogRepository.getById(row.getTriggerLogId()));
+                vo.setTriggerLog(LogVoConverter.toVO(esLogRepository.getById(row.getTriggerLogId())));
             }
             list.add(vo);
         }
@@ -379,15 +357,19 @@ public class DiagnosisServiceImpl implements DiagnosisService {
     // 追问（SSE）
     // ==================================================================
 
+    /**
+     * 追问。同步部分只有校验 + 用户消息落库；流式交付交给 {@code sink} 异步回调。
+     *
+     * <p>★ 本方法不再认识 {@code SseEmitter} —— service 只说"发一帧 / 结束 / 失败"，
+     * 用什么协议送出去由调用方（controller）决定。这段逻辑因此才能被普通单测覆盖。</p>
+     */
     @Override
-    public SseEmitter chat(String sessionId, ChatRequestDTO dto) {
+    public void chat(String sessionId, ChatRequestDTO dto, StreamSink sink) {
         // ★ 多租户：会话归属校验（不存在/不拥有都走 404）
         requireOwnedSession(sessionId);
         if (dto.getQuestion() == null || dto.getQuestion().isBlank()) {
             throw BizException.badRequest("问题不能为空");
         }
-
-        SseEmitter emitter = new SseEmitter(180_000L);
 
         // 1) 先把用户这句话落库
         ChatMessage userMsg = new ChatMessage();
@@ -398,21 +380,33 @@ public class DiagnosisServiceImpl implements DiagnosisService {
         userMsg.setTs(System.currentTimeMillis());
         chatMessageMapper.insert(userMsg);
 
-        // 2) 异步消费 Python 的 token 流
-        diagnosisExecutor.execute(() -> streamAnswer(sessionId, dto, emitter));
-        return emitter;
+        // 2) 异步消费 Python 的 token 流。
+        //    ⚠️ 提交本身可能失败（线程池满被拒）。此时若不通知 sink，客户端那条连接会
+        //    一直挂着直到超时 —— done/fail 必有一个被调用是 StreamSink 的硬约束。
+        try {
+            diagnosisExecutor.execute(() -> streamAnswer(sessionId, dto, sink));
+        } catch (RuntimeException e) {
+            log.error("追问任务提交失败 sessionId={}", sessionId, e);
+            sink.fail(e);
+        }
     }
 
-    private void streamAnswer(String sessionId, ChatRequestDTO dto, SseEmitter emitter) {
+    private void streamAnswer(String sessionId, ChatRequestDTO dto, StreamSink sink) {
         StringBuilder answer = new StringBuilder();
+        // ★ 终止只允许发生一次。此前 Python 流若不带 [DONE] 而自然耗尽，
+        //   循环内的 done() 和循环后的 done() 会被连着调两遍 —— SSE 适配器第二次 send
+        //   会打在已完成（响应已提交）的 emitter 上抛 IllegalStateException。
+        boolean terminated = false;
         try {
             for (String raw : pythonClient.chat(sessionId, dto.getQuestion(), dto.getHistory()).toIterable()) {
                 if (raw == null || raw.isEmpty()) {
                     continue;
                 }
-                // ★ 结束标记原样转发：前端 src/api/diagnosis.ts 就靠它判断流结束
+                // ★ 终止标记不外发原文：由 sink 决定它自己的终止形式
+                //   （SSE 适配器在这里送出 [DONE]，前端 src/api/diagnosis.ts 靠它判断流结束）
                 if ("[DONE]".equals(raw.trim())) {
-                    emitter.send(SseEmitter.event().data("[DONE]"));
+                    sink.done();
+                    terminated = true;
                     break;
                 }
                 // ★ 不要 trim！英文单词之间的那个前导空格就是靠它传过去的，
@@ -422,12 +416,16 @@ public class DiagnosisServiceImpl implements DiagnosisService {
                 //   这些过程帧，照旧全拼进去的话，历史回放会看到一屏工具调用的 JSON。
                 answer.append(textOfFrame(raw));
                 // 转发仍然是原样：前端要靠过程帧显示"正在查日志…"
-                emitter.send(SseEmitter.event().data(raw));
+                sink.emit(raw);
             }
-            emitter.complete();
+            if (!terminated) {
+                sink.done();
+            }
         } catch (Exception e) {
             log.error("追问失败 sessionId={}", sessionId, e);
-            emitter.completeWithError(e);
+            if (!terminated) {
+                sink.fail(e);
+            }
         }
 
         // 3) 回复落库。放在流结束之后 —— 即使落库失败，用户也已经看到完整回答了
@@ -483,8 +481,8 @@ public class DiagnosisServiceImpl implements DiagnosisService {
         vo.setSessionId(s.getSessionId());
         vo.setProjectId(s.getProjectId());
         vo.setStatus(s.getStatus());
-        vo.setStartedAt(toInstant(s.getStartedAt()));
-        vo.setFinishedAt(toInstant(s.getFinishedAt()));
+        vo.setStartedAt(Utilx.toInstant(s.getStartedAt()));
+        vo.setFinishedAt(Utilx.toInstant(s.getFinishedAt()));
         vo.setTotalCostMs(s.getTotalCostMs());
         vo.setLlmUsed(s.getLlmUsed());
         vo.setMatchedAnalyzer(s.getMatchedAnalyzer());
@@ -518,17 +516,6 @@ public class DiagnosisServiceImpl implements DiagnosisService {
         return r;
     }
 
-    /** LocalDateTime → Instant。库里的 DATETIME 是 UTC（yml 已强制会话时区），按 UTC 解释 */
-    private Instant toInstant(LocalDateTime t) {
-        return t == null ? null : t.toInstant(ZoneOffset.UTC);
-    }
-
-    private String rootMessage(Throwable e) {
-        Throwable cur = e;
-        while (cur.getCause() != null) {
-            cur = cur.getCause();
-        }
-        String msg = cur.getMessage();
-        return msg == null ? cur.getClass().getSimpleName() : msg;
-    }
+    // toInstant 与 rootMessage 均已收口到 common/Utilx —— 此前这里各有一份私有副本，
+    // rootMessage 那份还缺异常链防环（遇自引用／成环会无限循环，而它跑在故障上报路径上）
 }

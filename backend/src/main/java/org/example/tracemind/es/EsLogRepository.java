@@ -8,6 +8,7 @@ import co.elastic.clients.elasticsearch._types.aggregations.FieldDateMath;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch._types.query_dsl.RangeQuery;
 import co.elastic.clients.elasticsearch.core.*;
+import co.elastic.clients.elasticsearch.core.bulk.BulkResponseItem;
 import co.elastic.clients.json.JsonData;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -15,8 +16,6 @@ import org.example.tracemind.common.BizException;
 import org.example.tracemind.common.PageResult;
 import org.example.tracemind.pojo.dto.LogQueryDTO;
 import org.example.tracemind.pojo.entity.LogEntryDoc;
-import org.example.tracemind.pojo.vo.LogEntryVO;
-import org.example.tracemind.pojo.vo.LogStatsVO;
 import org.springframework.stereotype.Repository;
 
 import java.io.IOException;
@@ -40,10 +39,21 @@ public class EsLogRepository {
 
     // =============== 写 ===============
 
-    /** 批量写入。J4 导入、J5 采集都走这里。 */
-    public void bulkInsert(List<LogEntryDoc> docs) {
+    /**
+     * 批量写入。J4 导入、J5 采集都走这里。
+     *
+     * <p>★ 返回逐条结果而不是 void —— ES bulk 的「部分文档被拒」在协议层面是成功响应（HTTP 200 +
+     * errors=true），不会抛异常。若这里不如实返回，调用方就会把部分失败当全部成功：
+     * 兜底重放会删掉含失败条目的文件（永久丢数据）、导入会把失败的行计入进度并标 DONE（谎报完成）。
+     * 详见 {@link BulkResult}。</p>
+     *
+     * @return 逐条结果；{@link BulkResult#allSucceeded()} 为 false 时调用方必须处置失败子集
+     * @throws BizException 整批请求都没发出去／没被接受（ES 连不上、集群级拒绝）。
+     *                      与"部分失败"严格区分：那种情况正常返回、由明细体现。
+     */
+    public BulkResult bulkInsert(List<LogEntryDoc> docs) {
         if (docs == null || docs.isEmpty()) {
-            return;
+            return BulkResult.allOk(List.of());
         }
         try {
             // 构建批量请求
@@ -57,14 +67,30 @@ public class EsLogRepository {
             }
             // 执行批量请求
             BulkResponse resp = client.bulk(br.build());
-            if (resp.errors()) {
-                // 只打前 3 条，避免刷屏
-                resp.items().stream()
-                        .filter(i -> i.error() != null)
-                        .limit(3)
-                        .forEach(i -> log.error("bulk 单条失败 id={} reason={}",
-                                i.id(), i.error().reason()));
+
+            /*
+             * ⚠️ 下标对齐的前提：ES 保证 items() 的顺序与提交顺序一致，所以第 i 个 item
+             *   对应 docs.get(i)。改动这段时如果引入"只重投失败子集"的逻辑，必须确保传进来的
+             *   docs 就是本次实际提交的列表 —— 否则错位比吞掉错误更难查。
+             */
+            List<LogEntryDoc> succeeded = new ArrayList<>(docs.size());
+            List<BulkResult.Failed> failed = new ArrayList<>();
+            // 注意：8.10.4 客户端的逐条结果类型是 BulkResponseItem（新版才改名 BulkItemResponse）
+            List<BulkResponseItem> items = resp.items();
+            for (int i = 0; i < items.size(); i++) {
+                BulkResponseItem item = items.get(i);
+                if (item.error() != null) {
+                    failed.add(new BulkResult.Failed(docs.get(i), item.error().reason()));
+                } else {
+                    succeeded.add(docs.get(i));
+                }
             }
+            if (!failed.isEmpty()) {
+                // 明细已经如实回传给调用方，这里的日志只是给人看的线索，不再是唯一出口
+                log.error("bulk 部分失败 总数={} 失败={} 首个原因={}",
+                        docs.size(), failed.size(), failed.get(0).reason());
+            }
+            return new BulkResult(succeeded, failed);
         } catch (IOException e) {
             log.error("ES bulk 写入失败，条数={}", docs.size(), e);
             throw BizException.serviceUnavailable("日志写入 Elasticsearch 失败");
@@ -73,8 +99,14 @@ public class EsLogRepository {
 
     // =============== 读 ===============
 
-    /** 日志检索。字段名是驼峰，和 ES mapping 一一对应。 */
-    public PageResult<LogEntryVO> search(String projectId, LogQueryDTO query) {
+    /**
+     * 日志检索。字段名是驼峰，和 ES mapping 一一对应。
+     *
+     * <p>★ 返回 {@link LogEntryDoc}（数据形状）而不是 {@code LogEntryVO}（前端契约）——
+     * 仓储层只负责"怎么问 ES 要数据"，不负责"前端要什么形状"。转 VO 见
+     * {@link LogVoConverter#toVO}。</p>
+     */
+    public PageResult<LogEntryDoc> search(String projectId, LogQueryDTO query) {
         int page = query.pageOrDefault();
         int size = query.sizeOrDefault();
         //过滤条件
@@ -118,16 +150,16 @@ public class EsLogRepository {
         }
 
         try {
-            SearchResponse<LogEntryVO> resp = client.search(s -> s
+            SearchResponse<LogEntryDoc> resp = client.search(s -> s
                             .index(LogIndexInitializer.INDEX)
                             .query(q -> q.bool(b -> b.must(must)))
                             .from(query.offset())
                             .size(size)
                             .sort(so -> so.field(f -> f.field("timestamp").order(SortOrder.Desc))),
-                    LogEntryVO.class);
+                    LogEntryDoc.class);
 
             long total = resp.hits().total() == null ? 0L : resp.hits().total().value();
-            List<LogEntryVO> list = resp.hits().hits().stream()
+            List<LogEntryDoc> list = resp.hits().hits().stream()
                     .map(hit -> hit.source())
                     .filter(Objects::nonNull)
                     .toList();
@@ -138,11 +170,11 @@ public class EsLogRepository {
         }
     }
 
-    /** 单条。查不到返回 null，由调用方抛 40400。 */
-    public LogEntryVO getById(String logId) {
+    /** 单条。查不到返回 null，由调用方抛 40400。★ 返回 Doc，转 VO 交给 {@link LogVoConverter} */
+    public LogEntryDoc getById(String logId) {
         try {
-            GetResponse<LogEntryVO> resp = client.get(
-                    g -> g.index(LogIndexInitializer.INDEX).id(logId), LogEntryVO.class);
+            GetResponse<LogEntryDoc> resp = client.get(
+                    g -> g.index(LogIndexInitializer.INDEX).id(logId), LogEntryDoc.class);
             return resp.found() ? resp.source() : null;
         } catch (IOException e) {
             log.error("ES 取单条失败 logId={}", logId, e);
@@ -178,17 +210,23 @@ public class EsLogRepository {
     /** 趋势图窗口：近 24 小时（按 +08:00 对齐到整点，正好 24 个桶） */
     private static final int TREND_HOURS = 24;
 
-    /** 三段聚合一次查完（level 分布 / 小时趋势 / Top 模板） */
-    public LogStatsVO aggregate(String projectId) {
-        LogStatsVO stats = new LogStatsVO();
-        stats.setLevelDistribution(List.of());
-        stats.setFrequencyTrend(List.of());
-        stats.setTopTemplates(List.of());
+    /**
+     * 三段聚合一次查完（level 分布 / 小时趋势 / Top 模板）。
+     *
+     * <p>★ 返回 {@link AggregateResult}（中性事实）而不是 {@code LogStatsVO}（前端契约）——
+     * 仓储层不该知道图表要什么形状，也不该做 {@code "08:00"} 这种展示格式化。</p>
+     *
+     * <p>失败时返回空结果而不抛：派生统计掉了就掉了，接口挂着比返回空更糟。</p>
+     */
+    public AggregateResult aggregate(String projectId) {
         /*
          * ★ 趋势图必须给时间轴<b>固定边界</b>，否则 dateHistogram 的桶范围由命中的文档决定：
          *   一批日志全落在同一个小时里，就只返回 1 个桶，图上是一条线都画不出来的"空图"。
          *   界面标题写着"近 24h"，那范围就该是近 24h，跟这批数据多寡无关。
          *   （extendedBounds 会把没有文档的小时也补成 count=0 的桶，配合 minDocCount(0) 生效。）
+         *
+         * ⚠️ 这段 +08:00 <b>不是</b>展示逻辑而是聚合正确性的必要条件，所以留在仓储层；
+         *   真正属于视图的是把 keyAsString 裁成 "08:00" —— 那一步已挪到 service。
          */
         ZonedDateTime nowCst = ZonedDateTime.now(ZoneOffset.ofHours(8)).truncatedTo(ChronoUnit.HOURS);
         double fromMs = nowCst.minusHours(TREND_HOURS - 1).toInstant().toEpochMilli();
@@ -214,55 +252,38 @@ public class EsLogRepository {
                                     .aggregations("sample", sub -> sub.topHits(th -> th.size(1)))),
                     Void.class);
 
-            stats.setLevelDistribution(resp.aggregations().get("levelDist").sterms()
-                    .buckets().array().stream()
-                    .map(b -> {
-                        LogStatsVO.LevelDistributionItem item = new LogStatsVO.LevelDistributionItem();
-                        item.setLevel(b.key().stringValue());
-                        item.setCount(b.docCount());
-                        return item;
-                    }).toList());
+            AggregateResult result = new AggregateResult(
+                    resp.aggregations().get("levelDist").sterms().buckets().array().stream()
+                            .map(b -> new AggregateResult.LevelCount(
+                                    b.key().stringValue(), b.docCount()))
+                            .toList(),
+                    resp.aggregations().get("trend").dateHistogram().buckets().array().stream()
+                            .map(b -> new AggregateResult.TrendBucket(b.keyAsString(), b.docCount()))
+                            .toList(),
+                    resp.aggregations().get("topTpl").sterms().buckets().array().stream()
+                            .map(b -> {
+                                String template = null;
+                                String level = null;
+                                var hit = b.aggregations().get("sample").topHits().hits().hits()
+                                        .stream().findFirst().orElse(null);
+                                if (hit != null && hit.source() != null) {
+                                    // ★ 反序列化成 Doc（数据形状）而不是 VO（前端契约）——
+                                    //   仓储层不该知道 LogEntryVO 的存在
+                                    LogEntryDoc src = hit.source().to(LogEntryDoc.class);
+                                    template = src.getTemplate();
+                                    level = src.getLevel();
+                                }
+                                return new AggregateResult.TemplateCount(
+                                        b.key().stringValue(), template, level, b.docCount());
+                            })
+                            .toList());
 
-            stats.setFrequencyTrend(resp.aggregations().get("trend").dateHistogram()
-                    .buckets().array().stream()
-                    .map(b -> {
-                        LogStatsVO.FrequencyTrendItem item = new LogStatsVO.FrequencyTrendItem();
-                        item.setTime(toHourLabel(b.keyAsString()));
-                        item.setCount(b.docCount());
-                        return item;
-                    }).toList());
-
-            stats.setTopTemplates(resp.aggregations().get("topTpl").sterms()
-                    .buckets().array().stream()
-                    .map(b -> {
-                        LogStatsVO.TopTemplateItem item = new LogStatsVO.TopTemplateItem();
-                        item.setClusterId(b.key().stringValue());
-                        item.setCount(b.docCount());
-                        b.aggregations().get("sample").topHits().hits().hits().stream().findFirst()
-                                .ifPresent(hit -> {
-                                    var src = hit.source();
-                                    if (src != null) {
-                                        item.setTemplate(src.to(LogEntryVO.class).getTemplate());
-                                        item.setLevel(src.to(LogEntryVO.class).getLevel());
-                                    }
-                                });
-                        return item;
-                    }).toList());
-
-            return stats;
+            return result;
         } catch (IOException e) {
             log.error("ES 聚合失败 projectId={}，返回空结构", projectId, e);
             // 返回空结构而不是抛异常：前端图表要判空渲染，接口挂着比返回空更糟
-            return stats;
+            return AggregateResult.empty();
         }
-    }
-
-    /** "2026-09-16T08:00:00.000+08:00" → "08:00" */
-    private String toHourLabel(String keyAsString) {
-        if (keyAsString == null || keyAsString.length() < 13) {
-            return "";
-        }
-        return keyAsString.substring(11, 13) + ":00";
     }
 
     private boolean notBlank(String s) {
@@ -355,7 +376,7 @@ public class EsLogRepository {
                         if (!hits.isEmpty() && hits.get(0).source() != null) {
                             // ★ 从 source 里取 id，而不是 hit.id()：source 是 LogEntryDoc 全量写的，
                             //   里面一定有 id 字段；hit.id() 在 top_hits 聚合场景下不可靠
-                            LogEntryVO src = hits.get(0).source().to(LogEntryVO.class);
+                            LogEntryDoc src = hits.get(0).source().to(LogEntryDoc.class);
                             template = src.getTemplate();
                             sampleLogId = src.getId();
                         }

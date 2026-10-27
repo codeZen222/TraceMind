@@ -1,25 +1,22 @@
 package org.example.tracemind.service.impl;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.example.tracemind.aiclient.PythonClient;
+import org.example.tracemind.collector.CollectorFactory;
 import org.example.tracemind.collector.CollectorRegistry;
 import org.example.tracemind.collector.WatchServiceLogCollector;
 import org.example.tracemind.common.BizException;
 import org.example.tracemind.common.IdGenerator;
+import org.example.tracemind.common.Utilx;
 import org.example.tracemind.common.enums.ProjectSource;
-import org.example.tracemind.config.TraceMindProperties;
-import org.example.tracemind.es.EsLogRepository;
+import org.example.tracemind.collector.CollectorOffsetStore;
 import org.example.tracemind.mapper.LogMonitorTaskMapper;
 import org.example.tracemind.pojo.entity.LogMonitorTask;
 import org.example.tracemind.pojo.entity.Project;
 import org.example.tracemind.pojo.vo.MonitorStatusVO;
-import org.example.tracemind.service.ErrorRadarService;
 import org.example.tracemind.service.MonitorService;
 import org.example.tracemind.service.OwnershipGuard;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
@@ -36,12 +33,15 @@ public class MonitorServiceImpl implements MonitorService {
     private final OwnershipGuard ownershipGuard;
     private final LogMonitorTaskMapper logMonitorTaskMapper;
     private final CollectorRegistry collectorRegistry;
-    private final StringRedisTemplate redis;
-    private final EsLogRepository esLogRepository;
-    private final PythonClient pythonClient;
-    private final TraceMindProperties properties;
-    private final ObjectMapper objectMapper;
-    private final ErrorRadarService errorRadarService;
+    private final CollectorOffsetStore offsetStore;
+    /**
+     * 采集线程的创建入口。
+     *
+     * <p>此前本类为了手工传 12 参构造器，持有了一堆<b>自己压根不用</b>的依赖
+     * （StringRedisTemplate / EsLogRepository / PythonClient / ObjectMapper / ErrorRadarService…），
+     * 纯粹是依赖穿透。收进 {@link CollectorFactory} 后 service 层的依赖面回到实际需要的四个。</p>
+     */
+    private final CollectorFactory collectorFactory;
 
     /** 采集线程池，和导入/诊断分开 */
     @Qualifier("collectorExecutor")
@@ -74,7 +74,11 @@ public class MonitorServiceImpl implements MonitorService {
             return toVO(existing);
         }
 
-        // ③ 复用旧任务记录（保留 offset），没有就新建
+        // ③ 复用旧任务记录（保留位点），没有就新建。
+        //   ★ 新建时才把 offset / linesRead 置 0；复用时必须从 store 读回真实值 ——
+        //     ES 文档 ID 是「项目:文件:行号」，行号由 linesRead 累加得出。
+        //     原来这里只留 offset、linesRead 归零，于是 stop→start 或进程重启后，
+        //     新读的行会被算成第 1 行起，静默覆盖 ES 里最早的文档。
         LogMonitorTask task = existing != null ? existing : new LogMonitorTask();
         if (existing == null) {
             task.setTaskId(IdGenerator.task());
@@ -86,6 +90,10 @@ public class MonitorServiceImpl implements MonitorService {
             task.setErrorsDetected(0);
             task.setRuleMatched(0);
             task.setAgentTriggered(0);
+        } else {
+            CollectorOffsetStore.Position pos = offsetStore.read(task.getTaskId());
+            task.setOffset(pos.offset());
+            task.setLinesRead(pos.lines());
         }
         task.setRunning(true);
         task.setFilePath(logPath);
@@ -96,11 +104,9 @@ public class MonitorServiceImpl implements MonitorService {
             logMonitorTaskMapper.updateStatus(task);
         }
 
-        // ④ 起线程 + 登记
-        WatchServiceLogCollector collector = new WatchServiceLogCollector(
-                task.getTaskId(), projectId, logPath,
-                redis, esLogRepository, pythonClient, logMonitorTaskMapper, collectorRegistry,
-                properties, objectMapper, errorRadarService);
+        // ④ 起线程 + 登记。工厂负责注入容器 Bean，这里只给 per-task 的三个值；
+        //    create() 内部会调 init() 恢复续读位点（构造期不做 I/O）
+        WatchServiceLogCollector collector = collectorFactory.create(task.getTaskId(), projectId, logPath);
         try {
             collectorExecutor.execute(collector);        // 先尝试启动
             collectorRegistry.register(task.getTaskId(), collector);  // 启动成功了再登记
@@ -131,9 +137,11 @@ public class MonitorServiceImpl implements MonitorService {
             log.warn("登记表里没有该任务，可能线程已退出 taskId={}", task.getTaskId());
         }
 
-        // ★ 绝不删 Redis 里的 offset —— 下次 start 要接着读
+        // ★ 绝不删位点 —— 下次 start 要接着读
         task.setRunning(false);
-        task.setOffset(readOffsetFromRedis(task.getTaskId()));
+        CollectorOffsetStore.Position pos = offsetStore.read(task.getTaskId());
+        task.setOffset(pos.offset());
+        task.setLinesRead(pos.lines());
         logMonitorTaskMapper.updateStatus(task);
 
         return toVO(task);
@@ -160,37 +168,32 @@ public class MonitorServiceImpl implements MonitorService {
         return ownershipGuard.requireOwned(projectId);
     }
 
-    /** Redis 里的 offset 才是真身，MySQL 那份只是快照 */
-    private Long readOffsetFromRedis(String taskId) {
-        String v = redis.opsForValue().get("offset:" + taskId);
-        if (v == null) {
-            return 0L;
-        }
-        try {
-            return Long.parseLong(v);
-        } catch (NumberFormatException e) {
-            return 0L;
-        }
-    }
-
+    /**
+     * entity → VO。位点（offset / linesRead）以 store 的实时值为准，不用表里那份快照。
+     *
+     * <p>两种降级分开报，不合并成一个布尔：
+     * {@code aiDegraded} 来自 MySQL 快照里采集线程写入的 Python 熔断状态（影响模板提取），
+     * {@code positionDegraded} 来自本次 store 读取是否走了兜底（影响进度新鲜度）。
+     * 混在一起时用户看到「降级」不知道该去查 AI 服务还是查 Redis。</p>
+     */
     private MonitorStatusVO toVO(LogMonitorTask task) {
+        CollectorOffsetStore.Position pos = offsetStore.read(task.getTaskId());
         MonitorStatusVO vo = new MonitorStatusVO();
         vo.setTaskId(task.getTaskId());
         vo.setProjectId(task.getProjectId());
         vo.setRunning(Boolean.TRUE.equals(task.getRunning()));
         vo.setFilePath(task.getFilePath());
-        vo.setOffset(readOffsetFromRedis(task.getTaskId()));
+        vo.setOffset(pos.offset());
         vo.setFileSize(task.getFileSize());
-        vo.setLastReadAt(toInstant(task.getLastReadAt()));
-        vo.setLinesRead(task.getLinesRead());
+        vo.setLastReadAt(Utilx.toInstant(task.getLastReadAt()));
+        vo.setLinesRead(pos.lines());
         vo.setErrorsDetected(task.getErrorsDetected());
         vo.setRuleMatched(task.getRuleMatched());
         vo.setAgentTriggered(task.getAgentTriggered());
-        vo.setDegraded(Boolean.TRUE.equals(task.getDegraded()));
+        vo.setAiDegraded(Boolean.TRUE.equals(task.getDegraded()));
+        vo.setPositionDegraded(pos.degraded());
         return vo;
     }
 
-    private Instant toInstant(LocalDateTime t) {
-        return t == null ? null : t.toInstant(ZoneOffset.UTC);
-    }
+    // toInstant 已收口到 common/Utilx —— 此前这里是四份逐字节相同的私有副本之一
 }

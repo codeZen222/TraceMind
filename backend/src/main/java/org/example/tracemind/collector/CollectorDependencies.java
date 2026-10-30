@@ -5,6 +5,7 @@ import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import org.example.tracemind.aiclient.PythonClient;
 import org.example.tracemind.config.TraceMindProperties;
+import org.example.tracemind.es.EsFallbackStream;
 import org.example.tracemind.es.EsLogRepository;
 import org.example.tracemind.mapper.LogMonitorTaskMapper;
 import org.example.tracemind.service.ErrorRadarService;
@@ -64,4 +65,7 @@ public class CollectorDependencies {
 
     /** 新错误雷达：每批 ERROR 的 clusterId 喂给它判新 */
     private final ErrorRadarService errorRadarService;
+
+    /** ES 写失败兜底流（Stream 主路径；Redis 挂时生产端退回文件方案） */
+    private final EsFallbackStream esFallbackStream;
 }

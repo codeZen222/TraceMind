@@ -348,8 +348,8 @@ public class WatchServiceLogCollector implements Runnable {
         }
 
         if (!pending.isEmpty()) {
-            writeToLocalFallback(pending);
-            log.error("ES 写入 {} 次重试后仍有 {} 条未成功（本批共 {} 条），已写入本地兜底文件 taskId={}",
+            enqueueOrFallbackToFile(pending);
+            log.error("ES 写入 {} 次重试后仍有 {} 条未成功（本批共 {} 条），已进入兜底（Stream 优先，Redis 挂时退回文件） taskId={}",
                     MAX_RETRY, pending.size(), docs.size(), taskId);
         }
 
@@ -375,10 +375,37 @@ public class WatchServiceLogCollector implements Runnable {
     }
 
     // ==================================================================
-    // 本地兜底写入
+    // 兜底写入（Stream 主路径 + 文件退回）
     // ==================================================================
 
     private static final AtomicLong FALLBACK_SEQ = new AtomicLong(0);
+
+    /**
+     * 兜底写入的统一入口：<b>逐条</b>先入 Stream，Redis 不可用时退回本地文件。
+     *
+     * <p>为什么逐条：Stream 的 ack 是消息级的（一条日志 = 一个 entry），
+     * 逐条入队才能保证消费端能对成功/失败条目分别 ack，不重蹈「整批塞一条」的覆辙。</p>
+     *
+     * <p>为什么退回文件而不是丢：Redis 挂时若只 log.error，这几条日志就静默消失了。
+     * 退回 {@code writeToLocalFallback} 后，它们走既有 {@code FallbackReplayJob} 文件链，
+     * 至少不丢数据。文件方案是「最后防线」，Stream 是「主路径」。</p>
+     */
+    private void enqueueOrFallbackToFile(List<LogEntryDoc> docs) {
+        // 收集 Stream 也写不进的条目，统一退回文件（避免每失败一条就开一次文件）
+        List<LogEntryDoc> fileFallback = new ArrayList<>();
+        for (LogEntryDoc doc : docs) {
+            try {
+                deps.getEsFallbackStream().enqueue(doc);
+            } catch (Exception e) {
+                log.warn("兜底流入队失败（Redis 不可用），退回文件 taskId={} docId={} 原因={}",
+                        taskId, doc.getId(), e.getMessage());
+                fileFallback.add(doc);
+            }
+        }
+        if (!fileFallback.isEmpty()) {
+            writeToLocalFallback(fileFallback);
+        }
+    }
 
     private void writeToLocalFallback(List<LogEntryDoc> docs) {
         try {

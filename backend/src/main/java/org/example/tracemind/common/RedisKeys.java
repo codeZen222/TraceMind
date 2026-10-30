@@ -119,6 +119,35 @@ public final class RedisKeys {
         return NS + "ws:ticket:" + ticket;
     }
 
+    // ==================================================================
+    // ES 写失败兜底流（stream）
+    // ==================================================================
+
+    /**
+     * ES 写失败兜底流：一条待写日志 = 一个 entry（粒度对齐 bulk 的逐条语义）。
+     *
+     * <p>失败语义：Redis 不可用时，采集侧<b>退回本地文件</b>（沿用 {@code FallbackReplayJob} 的文件链），
+     * 而不是静默丢弃 —— 见 {@code WatchServiceLogCollector} 生产端的 try/catch。</p>
+     */
+    public static String esFallbackStream() {
+        return NS + "es:fallback";
+    }
+
+    /**
+     * 兜底流的死信队列：重试耗尽 / 毒消息在这里归档，不参与正常消费，靠人工排查。
+     *
+     * <p>⚠️ 死信流自身也要 {@code MAXLEN} 防无限增长，见 {@code EsFallbackStream#deadLetter}。</p>
+     */
+    public static String esFallbackDeadStream() {
+        return NS + "es:fallback:dead";
+    }
+
+    /**
+     * 兜底流的消费者组名。所有实例共用一个组，保证同一条只被一个实例消费。
+     * 组必须在使用前用 {@code XGROUP CREATE … MKSTREAM} 建好（幂等）。
+     */
+    public static final String ES_FALLBACK_GROUP = "collector";
+
     private RedisKeys() {
     }
 }

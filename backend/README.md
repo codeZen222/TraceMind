@@ -49,25 +49,20 @@
 | **实时事件流** | `agent_event` 先落库、再推 WebSocket；Redis `INCR` 生成 seq 保证顺序可校验、断线可补齐 |
 | **新错误雷达** | 以日志模板 ID 为错误指纹，新指纹出现才报新，避免告警风暴；冷启动静默建基线 |
 | **自动诊断闭环** | 雷达发现新 ERROR → 限流 → 自动触发诊断 → 自动出报告；开关可在设置页切换（存 Redis） |
-| **三层写入容灾** | ES 写入失败 → 退避重试 → 本地 `fallback/` 文件暂存 → 定时任务逐条确认后重放（仅采集链路；导入刻意不落盘） |
+| **三层写入容灾** | ES 写入失败 → 退避重试 → Redis Stream 兜底（Redis 挂时退回本地 `fallback/` 文件）→ 定时逐条确认后重放，成功 ack／毒消息转死信（仅采集链路；导入刻意不落盘） |
 | **多租户隔离** | JWT + 行级 `owner_id` 过滤 + `OwnershipGuard` 统一归属校验；访问他人资源返回 40400 防枚举 |
 
 ---
 
 ## 系统架构
 
-平台由三个工程组成，在本仓库中是三个子目录（`backend/` `python-ai/` `frontend/`），但**各自独立启动**：
+三个独立工程，各自启动：
 
-| 工程 | 本仓库位置 | 端口 | 职责 |
+| 工程 | 位置 | 端口 | 职责 |
 |---|---|---|---|
-| **backend**（本文档） | `backend/` | 8080 | 采集、导入、检索、诊断编排、事件推送、报告、鉴权、持久化 |
-| **python-ai** | `python-ai/` | 8100 | Drain3 模板、规则引擎、LangChain Agent、Chroma 案例库 |
-| **frontend** | `frontend/` | 5173 | Vue3 前端 |
-
-> 三端也可拆成独立仓库分别开发；那种布局下本机路径分别是
-> `C:\Users\32229\IdeaProjects\TraceMind`（后端）、
-> `C:\Users\32229\IdeaProjects\trace-mind-ai`（AI 服务）、
-> `E:\ai-develop\AIcoding\trace-mind-web`（前端）。
+| **TraceMind**（本仓库） | `C:\Users\32229\IdeaProjects\TraceMind` | 8080 | 采集、导入、检索、诊断编排、事件推送、报告、鉴权、持久化 |
+| **trace-mind-ai** | `C:\Users\32229\IdeaProjects\trace-mind-ai` | 8100 | Drain3 模板、规则引擎、LangChain Agent、Chroma 案例库 |
+| **trace-mind-web** | `E:\ai-develop\AIcoding\trace-mind-web` | 5173 | Vue3 前端 |
 
 Java 侧**不直接调用任何大模型**——所有 LLM / 模板 / 规则推理都在 Python 侧，Java 只做调度、持久化和转发。这样拆的好处：AI 服务挂掉时，平台的采集、检索、规则诊断全部照常，只有 Agent 深诊降级。
 
@@ -148,35 +143,31 @@ ES 索引 `log_entry` 不用手动建——启动类 `LogIndexInitializer` 会�
 ### 3. 启动 AI 服务
 
 ```bash
-cd ../python-ai
-.venv/Scripts/python -m trace_mind_ai      # Windows；Linux/macOS 用 source .venv/bin/activate 后 python -m trace_mind_ai。监听 8100
+cd C:/Users/32229/IdeaProjects/trace-mind-ai
+.venv/Scripts/python -m trace_mind_ai      # 监听 8100
 ```
 
 ### 4. 启动后端
 
 ```bash
-# 在 backend/ 目录下。优先用仓库自带的 wrapper，避免依赖本机 Maven 安装位置
-./mvnw spring-boot:run                      # Linux / macOS
-mvnw.cmd spring-boot:run                    # Windows（Git Bash 下直接敲 mvn 会报 classworlds 错，务必带 .cmd）
+cd C:/Users/32229/IdeaProjects/TraceMind
+# Git Bash 里直接敲 mvn 会报 classworlds 错，用 mvn.cmd
+E:/develop/apache-maven-3.9.4/bin/mvn.cmd spring-boot:run -Dspring-boot.run.arguments=--server.port=8080
 ```
 
-⚠️ 如果你本机 shell 里存在 `SERVER__PORT` 这类环境变量，Spring 会把它当成 `server.port` 吃掉（双下划线是 relaxed binding 的层级分隔符）。此时显式指定端口：
-
-```bash
-mvnw.cmd spring-boot:run -Dspring-boot.run.arguments=--server.port=8080
-```
+（显式写 `--server.port=8080` 是因为本机 shell 里有 `SERVER__PORT` 环境变量，会被 Spring 当成 `server.port` 吃掉。）
 
 或打包运行：
 
 ```bash
-mvnw.cmd package -DskipTests
+E:/develop/apache-maven-3.9.4/bin/mvn.cmd package -DskipTests
 java -jar target/TraceMind-0.0.1-SNAPSHOT.jar --server.port=8080
 ```
 
 ### 5. 启动前端（可选）
 
 ```bash
-cd ../frontend
+cd E:/ai-develop/AIcoding/trace-mind-web
 pnpm install
 pnpm dev        # http://localhost:5173
 ```
@@ -211,14 +202,15 @@ curl -X POST http://127.0.0.1:8080/api/auth/register \
 
 ### 8. 跑测试
 
-```bash
+```powershell
 # Git Bash / PowerShell 都要先切到 JDK 17，否则 Mockito 起不来（常见坑 10）
-export JAVA_HOME="/c/Users/32229/.jdks/ms-17.0.17"      # Git Bash；换成你本机的 JDK 17
-$env:JAVA_HOME="C:\Users\32229\.jdks\ms-17.0.17"        # PowerShell
-./mvnw test                                             # Windows 下用 mvnw.cmd test
+$env:JAVA_HOME="C:\Users\32229\.jdks\ms-17.0.17"
+E:/develop/apache-maven-3.9.4/bin/mvn.cmd test
 ```
 
-当前覆盖 10 个测试类 / **97 个用例全部通过**（含此前恒失败的 `contextLoads`）：位点存储降级与回落（6）、监控状态接口不再 50000（5）、采集行号连续性与失败子集处置（6）、兜底重放的文件处置（7）、Redis key 一致性（5）、工具方法防环与时间/字符串行为（9）、诊断事件流水线（6）、WS 握手鉴权与 Origin（14）、上传接管（7）、追问流式链路（9）、VO 转换器（9）。
+当前覆盖 12 个测试类 / **105 个用例全部通过**（含此前恒失败的 `contextLoads`）：位点存储降级与回落（6）、监控状态接口不再 50000（5）、采集行号连续性与失败子集处置（6）、兜底重放的文件处置（7）、Redis key 一致性（5）、工具方法防环与时间/字符串行为（9）、诊断事件流水线（6）、WS 握手鉴权与 Origin（14）、上传接管（7）、追问流式链路（9）、VO 转换器（9）、兜底流仓储（4）、兜底流消费语义（4）。
+
+> ⚠️ 新增的 Stream 兜底链路（`EsFallbackStream` / `FallbackStreamConsumer`）目前**只有单元级 mock 测试**，未验证真实 Redis 连接——`XADD MAXLEN`、`XREADGROUP`、`XPENDING` 在真实 Lettuce 下的行为需起 Redis 跑一次集成冒烟才算数。
 
 > **关键修复都做过变异验证**：A1（退回"部分失败也删文件"→ 2 条变红）、A2（退回"任一行坏即放弃整文件"→ 1 条变红）、`rootMessage` 防环（退回裸 `while` → **测试进程挂死 150 秒被强杀**，因为该 bug 的表现是死循环而非断言失败）、ID 归一（去掉文件名归一 → 8 条跨 3 个类变红）、fail-close（配置为 null 时改回放行 → 精确抓到那条）、上传接管（不真正落盘 → 3 条变红）、SSE 双重终止（去掉 `break` → 3 条变红）、字段搬运遗漏（漏掉 `lineNumber` → 精确抓到对应那行断言）。均恢复后全绿。
 >
@@ -232,14 +224,16 @@ $env:JAVA_HOME="C:\Users\32229\.jdks\ms-17.0.17"        # PowerShell
 src/main/java/org/example/tracemind/
 ├── TraceMindApplication.java
 ├── aiclient/        PythonClient：WebClient 调 AI 服务，带熔断器（3 次失败→断开，30s 试探）
-├── collector/       采集器：WatchServiceLogCollector / CollectorRegistry / FallbackReplayJob
+├── collector/       采集器：WatchServiceLogCollector / CollectorRegistry / FallbackReplayJob（文件兜底）
+│                    + FallbackStreamConsumer（★ Stream 兜底消费端，主路径）
 │                    + CollectorDependencies / CollectorFactory（依赖打包与创建入口）
 │                    + CollectorOffsetStore（位点读写 + Redis 故障回落 MySQL）
 ├── common/          ApiResponse、BizException、ResultCode、IdGenerator、PageResult、全局异常处理
 │   ├── enums/       日志级别、事件类型、会话状态、导入状态、工具名等
 │   ├── RedisKeys    ★ 所有 Redis key 的唯一命名出口（父前缀 tracemind: + TTL + 失败语义注释）
 │   └── Utilx        ★ rootMessage（限步防环）/ toInstant / isBlank 等的唯一实现
-├── config/          只放装配类：Security / WebSocket / Async / Jackson / TraceMindProperties
+├── config/          只放装配类：Security / WebSocket / Async / Jackson / TraceMindProperties、
+│                    RedisStreamConfig（★ Stream 专用 RedisTemplate，与业务 StringRedisTemplate 隔离）
 │                    （启动钩子在 bootstrap/、领域组件已归各自包 —— 见重构评估 R-1.5）
 ├── bootstrap/       ImportStartupCleanup（僵尸导入任务清理）、CollectorRecoveryRunner（重启续采）
 ├── controller/      9 个 REST 控制器（见接口一览）
@@ -248,7 +242,8 @@ src/main/java/org/example/tracemind/
 │                    WsSessionRegistry、AutoDiagnosisSwitch
 ├── es/              EsLogRepository（检索+聚合）、EsDocId（★ 文档 ID 唯一真源）、
 │                    BulkResult（逐条写入结果）、AggregateResult（中性聚合事实）、
-│                    LogVoConverter（★ Doc/聚合 → VO 的唯一出口）、LogIndexInitializer
+│                    LogVoConverter（★ Doc/聚合 → VO 的唯一出口）、LogIndexInitializer、
+│                    EsFallbackStream（★ ES 写失败兜底流：enqueue/ack/deadLetter/pendingCount）
 ├── mapper/          MyBatis Mapper 接口（XML 同名放 resources/mapper/）
 ├── pojo/
 │   ├── entity/      与表一一对应的实体
@@ -309,16 +304,17 @@ src/main/java/org/example/tracemind/
 
 **事件流顺序保证。** Redis `INCR diag:seq:{sessionId}` 生成单调递增 seq，事件**先落 `agent_event` 表、再推 WebSocket**，断线重连按 seq 补齐。WebSocket 强制一次性 ticket 鉴权（多租户下拿 sessionId 就能偷看别人诊断过程）。
 
-**三层写入容灾（仅采集链路）。** ES 写入失败先退避重试；仍失败则写本地 `./fallback/es-retry`（单文件上限 10000 行）；`FallbackReplayJob` 每分钟扫描重放。**宁可慢，不可丢。**
+**三层写入容灾（仅采集链路）。** ES 写入失败先退避重试；仍失败则进兜底。**主路径是 Redis Stream**（`tracemind:es:fallback`），Redis 不可用时退回本地 `./fallback/es-retry` 文件作为最后防线。消费端 `FallbackStreamConsumer` 每分钟读 Stream 重放、`FallbackReplayJob` 处理退回的文件。**宁可慢，不可丢。**
 
 本轮修复后这条链路的语义是：
 - **逐条确认，不是"没抛就算成功"** —— `bulkInsert` 返回 `BulkResult`，ES bulk 的部分失败（HTTP 200 + `errors=true`）不再被吞掉；
 - **只重试／只落盘失败子集** —— 已写成功的条目不会被重复投递；
-- **只有全成功才删兜底文件** —— 部分失败时用剩余原文原子重写（`.tmp` → move），文件收敛到只剩真失败的条目；
-- **一行坏 JSON 不阻塞同文件其余数据** —— 坏行隔离进 `corrupt/` 留档；
-- **毒消息有出口** —— 重试超 `max-replay-attempts`（默认 10）移入 `dead/` 并告警，不会永远每分钟陪跑。
+- **一条日志 = 一个 Stream entry** —— 粒度对齐 bulk 逐条语义，消费端才能对成功/失败分别 ack；
+- **消费失败二分处置** —— 可恢复失败（ES 拒/超时）不 ack、留 pending 等 Stream 原生重投；毒消息（反序列化失败/字段残缺）立刻 ack + 转死信流 `es:fallback:dead`，绝不卡 pending 队头；
+- **重试耗尽有出口** —— 投递次数超 `max-replay-attempts`（默认 10）转死信并告警，不会永远陪跑；
+- **积压可观测** —— `XPENDING` 直接给出未确认条数（`pendingCount()`），未来可接 Prometheus。
 
-⚠️ 两点边界仍然成立：**导入链路刻意不做本地兜底**（用户主动操作、重传成本低，落盘反而制造"完成但数据不全"的假象；改为如实报错 + 精确计数）；且 `./fallback` 在容器里通常不是持久卷，镜像重建即清零。若要跨机可靠，建议先用 Redis Stream 替掉手搓文件队列（拿到消费确认与积压可观测，且不新增运维对象），而不是直接上 Kafka/RabbitMQ——后者解决的是一对多广播与跨进程路由，当前单节点单消费者用不上。
+⚠️ 三点边界仍然成立：**导入链路刻意不做本地兜底**（用户主动操作、重传成本低，落盘反而制造"完成但数据不全"的假象；改为如实报错 + 精确计数）；**Redis 挂时退回文件**，而 `./fallback` 在容器里通常不是持久卷，镜像重建即清零——所以 Stream 只是把"单机文件漂移"换成"依赖 Redis 单点"，并未消灭单点风险；**幂等是前提不是赠品**——at-least-once 会重复投递，靠 ES 文档 ID `{projectId}:{裸文件名}:{行号}` 覆盖自己来兜，一旦改了 ID 格式或回退成整批重放，这个假设就崩。
 
 **多租户。** 登录后每个请求由 `JwtAuthenticationFilter` 解析出 userId 塞进 SecurityContext，业务层统一走 `CurrentUser.id()`；所有查询强制带 `owner_id` 过滤，并用 `OwnershipGuard.requireOwned()` 校验归属。访问他人资源返回 **40400 而不是 40300**——40300 等于告诉对方「这个 ID 存在」，会被用来枚举探测。
 
@@ -356,8 +352,8 @@ src/main/java/org/example/tracemind/
 9. **采集位点 key 已从 String 改为 Hash**：旧 `offset:{taskId}`（String）→ 新 `collector:pos:{taskId}`（Hash，含 `offset` / `lines` 两个 field）。原因：行号由 linesRead 累加得出，与 offset 分开存会出现「offset 恢复到第 5000 行、linesRead 归零」的半恢复状态，导致新行算成第 1 行起、**静默覆盖 ES 里最早的文档**。两者同一条 Hash 才能保证原子推进。旧的 `offset:*` key 不再被读取，可安全删除。
 10. **跑测试必须用 JDK 17**：本机默认 `JAVA_HOME` 若是 JDK 25，Mockito inline mock maker 会直接报 `Mockito cannot mock this class: StringRedisTemplate`，看着像测试写错了，其实是运行时不兼容。
     ```powershell
-    $env:JAVA_HOME="C:\Users\32229\.jdks\ms-17.0.17"   # 换成你本机的 JDK 17 路径
-    ./mvnw test                                        # Windows 用 mvnw.cmd test
+    $env:JAVA_HOME="C:\Users\32229\.jdks\ms-17.0.17"   # 换成你本机的 17
+    E:/develop/apache-maven-3.9.4/bin/mvn.cmd test
     ```
 11. **`Files.writeString(..., APPEND)` 不会创建文件**：目标不存在时抛 `NoSuchFileException`。测试里造日志文件要写 `CREATE, APPEND`。
 12. **改深层嵌套 JSON（如 openapi）后务必验证**：手工编辑极易少一层闭合括号。用 `ConvertFrom-Json` 或 `jq` 跑一遍再提交。
@@ -374,7 +370,7 @@ src/main/java/org/example/tracemind/
 1. **同一语义多份实现**（历史事故反复出现的形状，也是本项目的头号结构性风险）：分页兜底 DTO 有规范实现但两处 Service 手写绕过 —— 这是目前唯一还没收口的重复。ES 文档 ID、UTC 时间转换、`rootMessage` 均已归一（见下方"已修复"）。
 2. **WS 历史回放失去了单条发送超时**（Spring WebSocket 迁移的代价）。旧版用 `getAsyncRemote() + Future.get(timeout)` 防慢客户端拖住容器线程；Spring 的 `WebSocketSession.sendMessage` 是同步语义、没有等价的带超时异步句柄。现在的替代是「发送异常立即放弃剩余回放 + 每会话发送串行化」——能挡住坏连接，但挡不住"活着且极慢"的连接。
 3. **导入进度条分母是估算值**：`estimateLines` 用 `bytes / 120` 猜总行数。「谎报完成」已修（进度只累加确实写入 ES 的行），但百分比本身仍会偏差 —— 属既有设计。
-4. **自动化测试仅覆盖 Java 侧一部分**：Java 侧 8 个测试类 / 79 个用例全部通过（含此前恒失败的 `contextLoads`，随 WS 迁移一并解决）；Python 侧有 unit / contract / integration 共 8 个文件。报告生成与导入端到端流程仍靠手工 curl 验证。
+4. **自动化测试仅覆盖 Java 侧一部分**：Java 侧 12 个测试类 / 105 个用例全部通过（含此前恒失败的 `contextLoads`，随 WS 迁移一并解决）；Python 侧有 unit / contract / integration 共 8 个文件。报告生成与导入端到端流程、以及新增的 Stream 兜底链路仍靠手工验证——后者连真实 Redis 都没跑过。
 5. **`schema.sql` 与真实库不同步**（`users` 表缺失、`log_monitor_task.degraded` 列缺失）。本项目以真实库为准，上线前仍需人工对齐。
 6. **暂存目录多占一份磁盘**：接管上传文件的代价（单请求上限 500MB）。清理逻辑在 `runImport` 的 finally 与 `startImport` 的 catch 里，两处刻意不重叠；若进程在导入中途被强杀，那一轮的暂存文件会残留，需靠运维定期清 `./upload-staging`。
 
@@ -434,6 +430,7 @@ src/main/java/org/example/tracemind/
 | `degraded` 一个布尔混用两种故障 | 拆为 `aiDegraded`（Python 熔断）+ `positionDegraded`（Redis 位点降级），Java / 前端 types / openapi 三端同步 |
 | Python middleware 同名方法覆盖 | `TokenUsageMiddleware.after_model` 只保留同步版；token 统计走 `record()` |
 | **导入的失效句柄（R-4.2）** | controller 在请求线程内把上传内容接管到应用暂存目录，service 只收 `List<LogSource>`；详见上方 🔴 专节 |
+| ES 写失败兜底改用 Redis Stream（本轮） | 主路径 `tracemind:es:fallback`：逐条 XADD（带 MAXLEN）、消费端 `FallbackStreamConsumer` 成功 ack／可恢复失败留 pending／毒消息转死信流。Redis 挂时退回本地文件作最后防线。⚠️ 仅单元级 mock 测试，未跑真实 Redis |
 | **ES 文档 ID 三份实现** | 统一为 `{projectId}:{裸文件名}:{行号}`，生成与解析都收进 `es/EsDocId`。采集侧传绝对路径也会被归一，两条链路不再分叉；顺带消除 Windows 盘符冒号污染分隔符的隐患 |
 | **WS handler 用 static 字段绕开注入（R-4.1）** | 迁移到 Spring `TextWebSocketHandler`：static 全删、依赖 final 构造注入、Origin 校验挪到 `WsHandshakeInterceptor`。鉴权与白名单同时改为 **fail-close**（拿不到配置就拒绝，不再放行） |
 | **心跳清理失效连接永远清不掉** | 迁移时发现 handler 写 attributes 键 `diagSessionId`、Registry 读 `sessionId`，两边对不上。已统一为共享常量 `DiagnosisWsHandler.ATTR_SESSION_ID` |

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.example.tracemind.aiclient.PythonClient;
 import org.example.tracemind.config.TraceMindProperties;
 import org.example.tracemind.es.BulkResult;
+import org.example.tracemind.es.EsFallbackStream;
 import org.example.tracemind.es.EsLogRepository;
 import org.example.tracemind.mapper.LogMonitorTaskMapper;
 import org.example.tracemind.pojo.entity.LogEntryDoc;
@@ -81,6 +82,8 @@ class WatchServiceLogCollectorTest {
     private ObjectMapper objectMapper;
     @Mock
     private ErrorRadarService errorRadarService;
+    @Mock
+    private EsFallbackStream esFallbackStream;
 
     private Path logFile;
 
@@ -118,7 +121,7 @@ class WatchServiceLogCollectorTest {
     private void collectOnce() {
         CollectorDependencies deps = new CollectorDependencies(
                 offsetStore, redis, esLogRepository, pythonClient, logMonitorTaskMapper,
-                registry, properties, objectMapper, errorRadarService);
+                registry, properties, objectMapper, errorRadarService, esFallbackStream);
         WatchServiceLogCollector collector =
                 new CollectorFactory(deps).create(TASK_ID, PROJECT_ID, logFile.toString());
 

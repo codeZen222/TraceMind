@@ -3,6 +3,7 @@ package org.example.tracemind.collector;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.example.tracemind.aiclient.PythonClient;
 import org.example.tracemind.config.TraceMindProperties;
+import org.example.tracemind.es.EsFallbackStream;
 import org.example.tracemind.es.EsLogRepository;
 import org.example.tracemind.mapper.LogMonitorTaskMapper;
 import org.example.tracemind.service.ErrorRadarService;
@@ -55,10 +56,12 @@ class CollectorFactoryTest {
     private ObjectMapper objectMapper;
     @Mock
     private ErrorRadarService errorRadarService;
+    @Mock
+    private EsFallbackStream esFallbackStream;
 
     private CollectorDependencies deps() {
         return new CollectorDependencies(offsetStore, redis, esLogRepository, pythonClient,
-                logMonitorTaskMapper, registry, properties, objectMapper, errorRadarService);
+                logMonitorTaskMapper, registry, properties, objectMapper, errorRadarService, esFallbackStream);
     }
 
     @Test
